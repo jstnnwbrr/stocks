@@ -416,59 +416,30 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
 # RUN APP
 ########################
 # Specify stock names
-stock_list = ['DHR',
-              'CNC',
-              'DLTR',
+stock_list = ['COO',
+              'CDW',
+              'DHR',
+              'DD',
               'EMN',
+              'DLTR',
+              'CZR',
               'CPB',
               'BTG',
-              'AAPL',
-              'CAH',
-              'CAT',
-              'CCI',
-              'CCL',
-              'CDW',
-              'CF',
-              'COF',
-              'COO',
-              'COST',
-              'CPAY',
-              'CRM',
-              'CRWD',
-              'CSGP',
-              'CZR',
-              'DAL',
-              'DD',
-              'DECK',
-              'DIS',
-              'DVN',
-              'DXCM',
-              'EFX',
-              'EG',
-              'ENPH',
-              'NVDA',
-              'TSLA',
-              'INTC',
-              'PLTR',
-              'F',
-              'SOFI',
-              'LCID',
-              'AAL',
-              'GOOGL',
-              'ABEV',
-              'AVTR',
-              'NU',
-              'PONY',
-              'NIO',
-              'SMCI',
-              'GRAB',
-              'T',
-              'AGNC',
-              'RGTI',
-              'AMZN',
               'PFE',
-              'GOOG',
-              'HOOD']
+              'AGNC',
+              'DIS',
+              'CAH',
+              'CF',
+              'CCL',
+              'CCI',
+              'EG',
+              'DXCM',
+              'DVN',
+              'CSGP',
+              'CRWD',
+              'CRM',
+              'COST',
+              'BAX']
 
 ########################
 # Specify high-level settings
@@ -485,7 +456,7 @@ forecast_results = {}
 summary_results = []
 
 # Instantiate Excel writer
-writer = pd.ExcelWriter(f"C:\\Users\\sar81\\Desktop\\stock_forecasts_{today}.xlsx", engine='xlsxwriter')
+writer = pd.ExcelWriter(f"C:\\Users\\sar81\\OneDrive\\Desktop\\stock_forecasts_{today}.xlsx", engine='xlsxwriter')
 
 # Run process for each stock
 for stock_name in stock_list:
