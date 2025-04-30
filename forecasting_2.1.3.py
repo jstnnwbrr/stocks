@@ -403,7 +403,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         'Direction': [direction],
         'Recommendation': [recommendation]})
 
-    plot_filename = f"{stock_name}_forecast.png"
+    plot_filename = f"C:\\Users\\sar81\\stocks\\Plots\\{stock_name}_forecast.png"
     
     save_plot_forecast(stock_name, df, rolling_forecast_df, plot_filename)
 
@@ -416,8 +416,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
 # RUN APP
 ########################
 # Specify stock names
-stock_list = ['COO',
-              'CDW',
+stock_list = ['CDW',
               'DHR',
               'DD',
               'EMN',
@@ -425,21 +424,23 @@ stock_list = ['COO',
               'CZR',
               'CPB',
               'BTG',
-              'PFE',
               'AGNC',
-              'DIS',
               'CAH',
-              'CF',
-              'CCL',
-              'CCI',
               'EG',
               'DXCM',
               'DVN',
-              'CSGP',
-              'CRWD',
-              'CRM',
-              'COST',
-              'BAX']
+              'BAX',
+              'HPH',
+              'HIMS',
+              'HSAI',
+              'FRGE',
+              'FOUR',
+              'NTOIY',
+              'CCK',
+              'VKTX',
+              'OKTA',
+              'NE',
+              'CR']
 
 ########################
 # Specify high-level settings
@@ -456,7 +457,7 @@ forecast_results = {}
 summary_results = []
 
 # Instantiate Excel writer
-writer = pd.ExcelWriter(f"C:\\Users\\sar81\\OneDrive\\Desktop\\stock_forecasts_{today}.xlsx", engine='xlsxwriter')
+writer = pd.ExcelWriter(f"C:\\Users\\sar81\\stocks\\stock_forecasts_{today}.xlsx", engine='xlsxwriter')
 
 # Run process for each stock
 for stock_name in stock_list:
