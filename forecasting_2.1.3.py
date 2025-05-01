@@ -363,11 +363,11 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     else:
         direction = 'flat'
     
-    max_buy_price = round((predicted_avg_30_days * (1 - predicted_volatility_30_days)), 2)
-    target_sell_price = round((predicted_avg_30_days * (1 + predicted_volatility_30_days)), 2)
+    max_buy_price = round((predicted_avg_30_days * (1 - (0.75 * predicted_volatility_30_days))), 2)
+    target_sell_price = round((predicted_avg_30_days * (1 + (0.75 * predicted_volatility_30_days))), 2)
     
     if direction == 'up':
-        if ((target_sell_price / max_buy_price) - 1) > 0.05 :
+        if ((target_sell_price / max_buy_price) - 1) > 0.04 :
             recommendation = 'buy' 
         else:
             recommendation = 'hold'      
@@ -416,31 +416,77 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
 # RUN APP
 ########################
 # Specify stock names
-stock_list = ['CDW',
-              'DHR',
-              'DD',
-              'EMN',
-              'DLTR',
-              'CZR',
-              'CPB',
-              'BTG',
-              'AGNC',
-              'CAH',
-              'EG',
-              'DXCM',
-              'DVN',
-              'BAX',
-              'HPH',
-              'HIMS',
-              'HSAI',
-              'FRGE',
-              'FOUR',
-              'NTOIY',
-              'CCK',
-              'VKTX',
-              'OKTA',
-              'NE',
-              'CR']
+stock_list = ['ECL',
+            'ED',
+            'EMN',
+            'ES',
+            'ETN',
+            'EXC',
+            'FAST',
+            'FDX',
+            'FSLR',
+            'GEV',
+            'GOOG',
+            'GPN',
+            'GS',
+            'HCA',
+            'HSY',
+            'HUBB',
+            'IBM',
+            'IFF',
+            'IQV',
+            'JBHT',
+            'KKR',
+            'LH',
+            'LLY',
+            'LUV',
+            'MA',
+            'MAA',
+            'MAS',
+            'META',
+            'MKC',
+            'MKTX',
+            'MMC',
+            'MMM',
+            'MOH',
+            'MRNA',
+            'MTCH',
+            'MTD',
+            'NEM',
+            'NFLX',
+            'NTAP',
+            'NVDA',
+            'NXPI',
+            'O',
+            'ON',
+            'PEG',
+            'PH',
+            'PM',
+            'PNC',
+            'PODD',
+            'POOL',
+            'PWR',
+            'ROK',
+            'SJM',
+            'SMCI',
+            'SOLV',
+            'SPGI',
+            'STLD',
+            'SW',
+            'TDG',
+            'TER',
+            'TFC',
+            'TMUS',
+            'TPL',
+            'TRMB',
+            'TSCO',
+            'TT',
+            'UNH',
+            'UNP',
+            'VZ',
+            'WEC',
+            'YUM']
+
 
 ########################
 # Specify high-level settings
