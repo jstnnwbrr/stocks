@@ -249,17 +249,8 @@ def objective_mlp(trial):
     trial.set_user_attr('model', pipeline)
     
     return mae
-
-def plot_actual_vs_predicted(y_true, y_pred, model_name):
-    plt.figure(figsize=(8, 6))
-    plt.scatter(y_true, y_pred)
-    plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'k--', lw=2)
-    plt.xlabel('Actual')
-    plt.ylabel('Predicted')
-    plt.title(f"{model_name} - Actual vs. Predicted")
-    plt.show()
     
-def plot_actual_vs_predicted2(y_train, y_test, y_pred, model_name, stock_name):
+def plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name):
     plt.figure(figsize=(12, 6))
     plt.plot(y_train.index, y_train, label="Training Data", color="blue", linewidth=1)
     plt.plot(y_test.index, y_test, label="Test Data (Actuals)", color="green", linewidth=1)
@@ -334,8 +325,7 @@ def train_models(x_train, y_train, x_test, y_test, stock_name):
                 
             y_pred = best_model_for_type.predict(x_test)
                 
-            plot_actual_vs_predicted(y_test, y_pred, model_name)
-            plot_actual_vs_predicted2(y_train, y_test, y_pred, model_name, stock_name)
+            plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name)
             print(pd.DataFrame({'Actual' : y_test, 'Predicted' : y_pred}))
      
     return model_scores
@@ -509,44 +499,56 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
 ########################
 # Specify stock names
 stock_list = ['AGNC',
-              'BTG',
-              'CCL',
-              'CZR',
-              'DD',
-              'DXCM',
-              'HSY',
-              'EXC',
-              'CCK',
-              'HSAI',
-            'ECL',
-            'EMN',
-            'ES',
-            'FSLR',
-            'GPN',
-            'HUBB',
-            'IFF',
-            'IQV',
-            'JBHT',
-            'KKR',
-            'LUV',
-            'MKTX',
-            'MRNA',
-            'NVDA',
-            'NXPI',
-            'ON',
-            'PM',
-            'POOL',
-            'PWR',
-            'SMCI',
-            'SOLV',
-            'SPGI',
-            'TER',
-            'TMUS',
-            'TPL',
-            'TT',
-            'UNH',
-            'UNP',
-            'YUM']
+'AMT',
+'AVB',
+'AVDX',
+'AVY',
+'BBD',
+'BTDR',
+'BTG',
+'CCK',
+'CCL',
+'CDE',
+'CEG',
+'CZR',
+'DD',
+'DIS',
+'EMN',
+'FSLR',
+'HIMS',
+'HL',
+'HOOD',
+'HSAI',
+'HSY',
+'HUBB',
+'LUV',
+'MGNI',
+'MRNA',
+'NBIS',
+'NBIX',
+'NGD',
+'NVDA',
+'NXPI',
+'OGN',
+'ON',
+'PLTR',
+'PM',
+'RGTI',
+'RIG',
+'RIVN',
+'SKX',
+'SNAP',
+'SOLV',
+'TEM',
+'TER',
+'TMUS',
+'TPL',
+'TRIP',
+'TSLA',
+'TT',
+'UNH',
+'UNP']
+
 
 ########################
 # Specify high-level settings
