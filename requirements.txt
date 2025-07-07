@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+scikit-learn
+statsmodels
+optuna
+yfinance
+requests
+matplotlib
+xlsxwriter
