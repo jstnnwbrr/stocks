@@ -63,7 +63,61 @@ def create_date_features(df):
     df['is_quarter_start'] = df['Date'].dt.is_quarter_start.astype('int64')
     return df
 
+# --- Function to parse and clean ticker inputs ---
+def parse_and_clean_tickers(input_data):
+    """
+    Parses messy or clean pasted text into a clean list of stock tickers.
+    Filters out financial figures, numbers, and non-ticker entries.
+    """
+    if isinstance(input_data, list):
+        text_data = ' '.join(map(str, input_data))
+    else:
+        text_data = str(input_data)
+
+    # Step 1: Clean split of all tokens
+    tokens = re.split(r'[\s,;\t\n]+', text_data)
+
+    # Step 2: Keep only short uppercase strings that are likely tickers (1–5 chars, all caps)
+    cleaned_tickers = [
+        token.strip().upper()
+        for token in tokens
+        if re.fullmatch(r'[A-Z]{1,5}', token.strip())  # 1-5 uppercase letters only
+    ]
+
+    # Step 3: Remove duplicates while preserving order
+    seen = set()
+    unique_tickers = []
+    for ticker in cleaned_tickers:
+        if ticker not in seen:
+            seen.add(ticker)
+            unique_tickers.append(ticker)
+
+    return unique_tickers
+
 @st.cache_data(ttl=3600) # Cache data for 1 hour
+def get_top_100_active_tickers(tiingo_api_key):
+    url = "https://api.tiingo.com/iex"
+    headers = {
+        "Authorization": f"Token {tiingo_api_key}"
+    }
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        df = pd.DataFrame(data)
+        df = df.sort_values(by="volume", ascending=False)
+
+        top_tickers = df['ticker'].head(100).tolist()
+        top_tickers = parse_and_clean_tickers(top_tickers)
+        return top_tickers
+
+    except Exception as e:
+        st.warning(f"Failed to fetch top active tickers: {e}")
+        # Fallback default
+        return ["AAPL", "MSFT", "GOOG", "AMZN"]
+
 def get_data(stock_name, end_date, tiingo_api_key):
     # Use Tiingo API as primary data source
     try:
@@ -286,37 +340,6 @@ def autofit_columns(df, worksheet):
         column_width = max(df[column].astype(str).map(len).max(), len(column)) + 3
         worksheet.set_column(i, i, column_width)
 
-# --- Function to parse and clean ticker inputs ---
-def parse_and_clean_tickers(input_data):
-    """
-    Parses messy or clean pasted text into a clean list of stock tickers.
-    Filters out financial figures, numbers, and non-ticker entries.
-    """
-    if isinstance(input_data, list):
-        text_data = ' '.join(map(str, input_data))
-    else:
-        text_data = str(input_data)
-
-    # Step 1: Clean split of all tokens
-    tokens = re.split(r'[\s,;\t\n]+', text_data)
-
-    # Step 2: Keep only short uppercase strings that are likely tickers (1–5 chars, all caps)
-    cleaned_tickers = [
-        token.strip().upper()
-        for token in tokens
-        if re.fullmatch(r'[A-Z]{1,5}', token.strip())  # 1-5 uppercase letters only
-    ]
-
-    # Step 3: Remove duplicates while preserving order
-    seen = set()
-    unique_tickers = []
-    for ticker in cleaned_tickers:
-        if ticker not in seen:
-            seen.add(ticker)
-            unique_tickers.append(ticker)
-
-    return unique_tickers
-
 # --- Streamlit App UI ---
 st.title("📈 Stock Price Forecasting Tool")
 st.markdown("""
@@ -324,19 +347,27 @@ This application uses machine learning to forecast stock prices.
 Enter stock tickers by pasting them into the text box or by uploading a file.
 """)
 
+# Get API key from environment variable
+tiingo_api_key = os.getenv("TIINGO_API_KEY")
+
 # --- Sidebar for Inputs ---
 with st.sidebar:
     st.header("⚙️ Configuration")
     
     st.subheader("Ticker Input")
-    st.info("You can either paste tickers into the text box or upload a file.")
+    st.info("App automatically pre-populates the top 100 most active stocks (or a default set if an error occurs), but feel free to paste your own tickers or upload a file.")
     
-    default_stocks = "AAPL, MSFT, GOOG, AMZN"
+    if tiingo_api_key:
+        default_tickers = get_top_100_active_tickers(tiingo_api_key)
+        default_stocks = ", ".join(default_tickers)
+    else:
+        default_stocks = "AAPL, MSFT, GOOG, AMZN"
+
     stock_list_str = st.text_area(
         "Paste Stock Tickers Here", 
         default_stocks, 
         height=150,
-        help="Paste a list of tickers separated by commas, spaces, or newlines. You can also copy-paste directly from a spreadsheet column or a web table - even if they include messy details like daily prices, etc."
+        help="Paste a list of tickers..."
     )
 
     uploaded_file = st.file_uploader(
@@ -354,9 +385,6 @@ with st.sidebar:
     save_forecasts_to_excel = st.checkbox("Save forecasts per ticker to Excel", value=False)
 
 # --- Main App Logic ---
-# Get API key from environment variable
-tiingo_api_key = os.getenv("TIINGO_API_KEY")
-
 if st.button("🚀 Run Forecast"):
     stock_list = []
     
