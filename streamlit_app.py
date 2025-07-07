@@ -355,7 +355,7 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     
     st.subheader("Ticker Input")
-    st.info("App automatically pre-populates the top 100 most active stocks (or a default set if an error occurs), but feel free to paste your own tickers or upload a file.")
+    st.info("App will pre-populate the top 100 most active stocks (or backup default), but feel free to paste your own tickers or upload a file.")
     
     if tiingo_api_key:
         default_tickers = get_top_100_active_tickers(tiingo_api_key)
