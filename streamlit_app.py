@@ -95,7 +95,7 @@ def parse_and_clean_tickers(input_data):
     return unique_tickers
 
 @st.cache_data(ttl=3600) # Cache data for 1 hour
-def get_top_100_active_tickers(tiingo_api_key):
+def get_top_200_active_tickers(tiingo_api_key):
     url = "https://api.tiingo.com/iex"
     headers = {
         "Authorization": f"Token {tiingo_api_key}"
@@ -109,7 +109,7 @@ def get_top_100_active_tickers(tiingo_api_key):
         df = pd.DataFrame(data)
         df = df.sort_values(by="volume", ascending=False)
 
-        top_tickers = df['ticker'].head(100).tolist()
+        top_tickers = df['ticker'].head(200).tolist()
         top_tickers = parse_and_clean_tickers(top_tickers)
         return top_tickers
 
@@ -199,7 +199,7 @@ def plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name):
     ax.plot(y_test.index, y_test, label="Test Data (Actuals)", color="green", linewidth=1)
     ax.plot(y_test.index, y_pred, label="Predicted Test Data", color="red", linewidth=1)
     ax.legend()
-    ax.set_title(f"{model_name} - Actual vs Predicted Values on Test Set ({stock_name})")
+    ax.set_title(f"{stock_name} - Historical Actuals vs Predicted")
     ax.set_xlabel("Date")
     ax.set_ylabel("Values")
     ax.grid(True)
@@ -355,10 +355,10 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     
     st.subheader("Ticker Input")
-    st.info("App pre-populates the top 100 most active stocks, but feel free to paste your own or upload a file!")
+    st.info("App pre-populates the top 200 most active stocks, but feel free to paste your own or upload a file!")
     
     if tiingo_api_key:
-        default_tickers = get_top_100_active_tickers(tiingo_api_key)
+        default_tickers = get_top_200_active_tickers(tiingo_api_key)
         default_stocks = ", ".join(default_tickers)
     else:
         default_stocks = "AAPL, MSFT, GOOG, AMZN"
@@ -473,7 +473,7 @@ if st.button("🚀 Run Forecast"):
                 best_model_name_for_stock = ""
                 
                 for model_name, study in studies.items():
-                    with st.spinner(f"Optimizing {model_name}..."):
+                    with st.spinner(f"Optimizing model..."):
                         pruner = optuna.pruners.MedianPruner()
                         study.optimize(objectives[model_name], n_trials=max_trials)
                         
@@ -494,10 +494,10 @@ if st.button("🚀 Run Forecast"):
                         y_pred = model.predict(x_test)
                         fig = plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name)
                         
-                        st.write(f"**{model_name}** (MAE: {mae:.4f})")
+                        st.write(f"**Model for {stock_name}** (MAE: {mae:.4f})")
                         st.pyplot(fig)
                 
-                st.success(f"Best Model for {stock_name}: **{best_model_name_for_stock}** with MAE: **{best_mae_for_stock:.4f}**")
+                st.success(f"Best Model for {stock_name}: Mean Absolute Error (MAE): **{best_mae_for_stock:.4f}**")
 
                 # --- Forecasting ---
                 st.subheader(f"Forecast for {stock_name}")
