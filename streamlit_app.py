@@ -443,7 +443,7 @@ if st.button("🚀 Run Forecast"):
                     st.error(f"Could not retrieve data for {stock_name}. Skipping.")
                     continue
                 
-                MIN_HISTORY_REQUIRED = 500
+                MIN_HISTORY_REQUIRED = 326
                 if len(df) < MIN_HISTORY_REQUIRED:
                     st.warning(f"{stock_name} has only {len(df)} historical records. Skipping due to insufficient data.")
                     continue
