@@ -570,6 +570,8 @@ if st.button("🚀 Run Forecast"):
                 fig_forecast = save_plot_forecast(df, rolling_forecast_df, stock_name)
                 st.pyplot(fig_forecast)
 
+                st.dataframe(summary_df, use_container_width=True)
+
                 sheet_name = re.sub(r'[\[\]\*:\?/\\ ]', '_', stock_name)[:31]
                 
                 if save_forecasts_to_excel:
