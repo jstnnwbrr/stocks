@@ -451,6 +451,7 @@ with st.sidebar:
         default_stocks = "AAPL, MSFT, GOOG, AMZN"
 
     stock_list_str = st.text_area("Paste Stock Tickers Here", default_stocks, height=150, help="Paste a list of tickers...")
+    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "APPN, BTG, IOVA", height=100, help="Tickers you do not wish to buy...")
 
     uploaded_file = st.file_uploader(
         "Or Upload a File", 
@@ -481,19 +482,28 @@ if st.button("🚀 Run Forecast"):
             elif uploaded_file.name.endswith('.txt'):
                 # For txt, we decode and let the parser handle it
                 stock_list = parse_and_clean_tickers(uploaded_file.getvalue().decode("utf-8"))
-            
+                do_not_buy_list = parse_and_clean_tickers(do_not_buy_list_str) if do_not_buy_list_str else []
+                do_not_buy_list = [ticker.strip().upper() for ticker in do_not_buy_list if ticker.strip()]
+                stock_list = [ticker for ticker in stock_list if ticker not in do_not_buy_list]
+
             # For csv/xlsx, assume tickers are in the first column
             if 'df_upload' in locals():
                 if not df_upload.empty:
                     # Convert first column to list to be parsed
                     raw_tickers = df_upload.iloc[:, 0].tolist()
                     stock_list = parse_and_clean_tickers(raw_tickers)
+                    do_not_buy_list = parse_and_clean_tickers(do_not_buy_list_str) if do_not_buy_list_str else []
+                    do_not_buy_list = [ticker.strip().upper() for ticker in do_not_buy_list if ticker.strip()]
+                    stock_list = [ticker for ticker in stock_list if ticker not in do_not_buy_list]
                 else:
                     st.warning("Uploaded file is empty.")
 
         elif stock_list_str:
             st.info("Processing tickers from text area.")
             stock_list = parse_and_clean_tickers(stock_list_str)
+            do_not_buy_list = parse_and_clean_tickers(do_not_buy_list_str) if do_not_buy_list_str else []
+            do_not_buy_list = [ticker.strip().upper() for ticker in do_not_buy_list if ticker.strip()]
+            stock_list = [ticker for ticker in stock_list if ticker not in do_not_buy_list]
     
     except Exception as e:
         st.error(f"An error occurred while processing inputs: {e}")
@@ -504,6 +514,8 @@ if st.button("🚀 Run Forecast"):
         st.error("No valid stock tickers found. Please enter tickers in the text box or upload a file.")
     else:
         st.success(f"Found {len(stock_list)} unique tickers to process: {', '.join(stock_list)}")
+        st.success(f"The following {len(do_not_buy_list)} tickers were identified as Do Not Buy: {', '.join(do_not_buy_list)}")
+
         today = datetime.date.today()
         end_date = today + pd.offsets.BusinessDay(1)
         
