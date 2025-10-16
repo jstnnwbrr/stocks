@@ -451,7 +451,7 @@ with st.sidebar:
         default_stocks = "AAPL, MSFT, GOOG, AMZN"
 
     stock_list_str = st.text_area("Paste Stock Tickers Here", default_stocks, height=150, help="Paste a list of tickers...")
-    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "APPN, BTG, IOVA", height=100, help="Tickers you do not wish to buy...")
+    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "APPN, BL, BTG, IOVA", height=100, help="Tickers you do not wish to buy...")
 
     uploaded_file = st.file_uploader(
         "Or Upload a File", 
