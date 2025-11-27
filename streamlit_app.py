@@ -582,7 +582,7 @@ if st.button("🚀 Run Forecast"):
             unique_temp_set = set()
             for ticker in stock_list:
                 if ticker not in unique_temp_set:
-                    unique_teemp_set.add(ticker)
+                    unique_temp_set.add(ticker)
                     unique_stock_list.append(ticker)
 
             del ticker
