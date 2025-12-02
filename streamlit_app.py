@@ -499,7 +499,7 @@ with st.sidebar:
         default_stocks = "AAPL, MSFT, GOOG, AMZN"
 
     stock_list_str = st.text_area("Paste Stock Tickers Here", default_stocks, height=150, help="Paste a list of tickers...")
-    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AI, APLS, APPN, AU, AUR, BITF, BL, BTBT, BTDR, BTG, DNN, GDX, GLD, GLDM, GOOG, ICCM, IOVA, JDST, LLC, MARA, MJNA, NGD, PSLV, QID, QQQU, QUBT, RDDT, RIOT, SGOL, SLGC, SLV, SOUN, SOXL, SPDN, SPXU, SQQQ, SRM, TQQQ, TSLL, TSLQ, TSLS, TSLY, TTD, TZA, ULTY, VIST, VRNS, WULF", height=100, help="Tickers you do not wish to buy...")
+    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AI, APLS, APPN, AU, AUR, BITF, BL, BTBT, BTDR, BTG, DNN, GDX, GLD, GLDM, GOOG, ICCM, IOVA, JDST, LLC, MARA, MJNA, NGD, PLTD, PSLV, QID, QQQU, QUBT, RDDT, RIOT, SGOL, SLGC, SLV, SOUN, SOXL, SPDN, SPXU, SQQQ, SRM, TQQQ, TSDD, TSLL, TSLQ, TSLS, TSLY, TTD, TZA, ULTY, VIST, VRNS, WULF", height=100, help="Tickers you do not wish to buy...")
 
     uploaded_file = st.file_uploader(
         "Or Upload a File", 
