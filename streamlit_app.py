@@ -38,7 +38,7 @@ st.set_page_config(layout="wide", page_title="Stock Forecasting App")
 # Download VADER lexicon on startup (if not already present)
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
-except nltk.downloader.DownloadError:
+except LookupError:
     st.info("Downloading VADER lexicon...")
     nltk.download('vader_lexicon')
 
