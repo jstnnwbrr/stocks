@@ -9,3 +9,5 @@ yfinance
 requests
 matplotlib
 xlsxwriter
+nltk
+tiingo
