@@ -21,14 +21,16 @@ import yfinance as yf
 import io
 import re
 import nltk
+
+from datetime import timedelta
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from tiingo import TiingoClient
-
 from sklearn.linear_model import ElasticNet
 from sklearn.metrics import mean_absolute_error
 from sklearn.pipeline import Pipeline
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.stattools import acf, pacf
+from sklearn.preprocessing import StandardScaler
 
 # --- Initial Setup ---
 warnings.filterwarnings("ignore")
@@ -153,7 +155,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
         throttle_request()
         url = f"https://api.tiingo.com/tiingo/daily/{stock_name}/prices"
         headers = {'Content-Type': 'application/json', 'Authorization': f'Token {tiingo_api_key}'}
-        params = {'startDate': '2015-01-01', 'endDate': end_date.strftime('%Y-%m-%d'), 'resampleFreq': 'daily'}
+        params = {'startDate': '2019-01-01', 'endDate': end_date.strftime('%Y-%m-%d'), 'resampleFreq': 'daily'}
         response = requests.get(url, headers=headers, params=params)
         
         if response.status_code != 200:
@@ -179,7 +181,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
         st.warning(f"Tiingo failed for {stock_name}: {e}. Trying yfinance as backup.")
         try:
             st.info(f"[{stock_name}] Attempting to source data from yfinance...")
-            df = yf.download(stock_name, start='2015-01-01', end=end_date, progress=False)
+            df = yf.download(stock_name, start='2019-01-01', end=end_date, progress=False)
             if not df.empty:
                 df = df.reset_index().rename(columns={'index': 'Date'}) # Ensure 'Date' column exists
                 df = create_date_features(df)
@@ -194,7 +196,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
     return None
 
 @st.cache_data(ttl=3600) # Cache news for 1 hour
-def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date):
+def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, interval_days=45):
     """
     Fetches news, calculates daily sentiment, and identifies the most recent article.
     
@@ -205,21 +207,44 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date):
     st.info(f"[{ticker}] Fetching news sentiment (Tiingo News)...")
     throttle_request()
 
+    all_articles = []
     most_recent_article = None
 
     try:
         # Initialize Tiingo Client
         client = TiingoClient({'api_key': api_key})
 
-        # Fetch News Articles (using 1000 limit for better coverage)
-        articles = client.get_news(
-            tickers=[ticker],
-            startDate=start_date.strftime('%Y-%m-%d'),
-            endDate=end_date.strftime('%Y-%m-%d'),
-            limit=1000 
-        )
+        # 1.2 Split the time range into intervals
+        # We will assume that if it's a string, we parse it, otherwise, we convert it.
+        if isinstance(start_date, str):
+            current_start = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+        else: # Handle datetime.date objects by combining them with a time component (00:00:00)
+            current_start = datetime.datetime.combine(start_date, datetime.time())
+
+        # The end_date also needs to be converted if it's a string
+        if isinstance(end_date, str):
+            parsed_end_date = datetime.datetime.strptime(end_date, '%Y-%m-%d')
+        else:
+            parsed_end_date = datetime.datetime.combine(end_date, datetime.time())
+
+        current_end = min(current_start + timedelta(days=interval_days - 1), parsed_end_date)
+    
+        while current_start <= parsed_end_date: 
+
+            # Fetch news articles for the current interval
+            articles = client.get_news(
+                tickers=[ticker],
+                startDate=current_start.strftime('%Y-%m-%d'),
+                endDate=current_end.strftime('%Y-%m-%d'),
+                limit=1000 
+            )
+            all_articles.extend(articles)
         
-        if not articles:
+            # Move to the next interval
+            current_start = current_end + timedelta(days=1)
+            current_end = min(current_start + timedelta(days=interval_days - 1), datetime.datetime.strptime(end_date, '%Y-%m-%d'))
+
+        if not all_articles:
             st.warning(f"[{ticker}] No articles found for sentiment analysis.")
             return pd.DataFrame(), most_recent_article
 
@@ -227,8 +252,12 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date):
         st.error(f"[{ticker}] Error fetching Tiingo News for sentiment: {e}")
         return pd.DataFrame(), most_recent_article
     
-    news_df = pd.DataFrame(articles)
+    # Convert to DataFrame and pre-process
+    news_df = pd.DataFrame(all_articles)
     
+    # Remove duplicates based on 'title' and 'description'
+    news_df = news_df.drop_duplicates(subset=['title', 'description'], keep='first')
+
     # Process the 'publishedDate' to ensure timezone awareness is handled for sorting
     news_df['publishedDate_dt'] = pd.to_datetime(news_df['publishedDate'], format='ISO8601', errors='coerce').dt.tz_localize(None)
     news_df['date'] = news_df['publishedDate_dt'].dt.date
@@ -240,7 +269,8 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date):
             'title': most_recent_article_row['title'],
             'description': most_recent_article_row['description'],
             'url': most_recent_article_row['url'],
-            'date': most_recent_article_row['publishedDate_dt'].strftime('%Y-%m-%d %H:%M:%S')
+            'date': most_recent_article_row['publishedDate_dt'].strftime('%Y-%m-%d %H:%M:%S'),
+            'tickers': most_recent_article_row['tickers']
         }
         
     # 2. Calculate daily sentiment
@@ -261,7 +291,7 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date):
 def incorporate_sentiment(price_df, sentiment_df):
     """
     Merges price and sentiment data, then fills missing sentiment values 
-    using FFILL, anchoring to 0.0, and linear interpolation.
+    using FFILL, anchoring to 0.0, and mean interpolation.
     """
     if sentiment_df.empty:
         # Add a default, zero-filled column if no sentiment data exists
@@ -276,20 +306,20 @@ def incorporate_sentiment(price_df, sentiment_df):
     final_df = pd.merge(df, sentiment_df, on='Date', how='left')
     
     # 2. Imputation Pipeline
-    
     # 2a. Forward Fill (FFILL): Carry the last known sentiment score forward (handles weekends/holidays).
     final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(method='ffill')
     
-    # 2b. Anchor Check: If the very first value is still NaN, set it to 0.0.
-    # This creates a neutral starting point for the subsequent linear interpolation.
-    if final_df['Avg_Sentiment'].isna().iloc[0]:
-        final_df.loc[0, 'Avg_Sentiment'] = 0.0
-    
-    # 2c. Linear Interpolation: Fill any remaining gaps 
-    # (including the ramp-up from the 0.0 anchor) by linearly interpolating.
-    final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].interpolate(method='linear')
-    
-    # 2d. Final Fallback: Fill any remaining NaNs (shouldn't happen) with 0.0.
+    # 2b. Mean Interpolation: Fill any remaining gaps with the mean as a baseline sentiment
+    avg_sentiment = final_df['Avg_Sentiment'].mean()
+    final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(avg_sentiment)
+
+    try:
+        scaler = StandardScaler()
+        final_df['Avg_Sentiment'] = scaler.fit_transform(final_df[['Avg_Sentiment']])
+    except Exception as e:
+        st.warning(f"StandardScaler failed on Avg_Sentiment: {e}. Proceeding without scaling.")
+
+    # 2c. Final Fallback: Fill any remaining NaNs (shouldn't happen) with 0.0.
     final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(0.0)
     
     # 3. Set Date back as index
@@ -861,7 +891,6 @@ if st.button("🚀 Run Forecast"):
 
         today = datetime.date.today()
         end_date = today + pd.offsets.BusinessDay(1)
-        sentiment_start_date = datetime.datetime.strptime('2015-01-01', '%Y-%m-%d').date()
 
         forecast_results = {}
         summary_results = []
@@ -902,8 +931,8 @@ if st.button("🚀 Run Forecast"):
                     sentiment_df, most_recent_article = fetch_and_analyze_sentiment_tiingo(
                         tiingo_api_key, 
                         stock_name, 
-                        earliest_price_date, # Start sentiment search from the beginning of price data
-                        today
+                        earliest_price_date.strftime('%Y-%m-%d'), # Start sentiment search from the beginning of price data
+                        today.strftime('%Y-%m-%d')
                     )
                     df = incorporate_sentiment(df, sentiment_df)
 
@@ -989,6 +1018,7 @@ if st.button("🚀 Run Forecast"):
                     st.subheader(f"🗞️ Most Recent News for {stock_name}")
                     st.markdown(f"**[{most_recent_article['title']}]({most_recent_article['url']})**")
                     st.markdown(f"**Published:** {most_recent_article['date']}")
+                    st.markdown(f"**Tickers:** {most_recent_article['tickers']}")
                     st.caption(most_recent_article['description'])
                     st.markdown("---")
 
