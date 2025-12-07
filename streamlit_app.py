@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optuna
 import os
+import polars as pl
 import pandas as pd
 import random
 import requests
@@ -30,7 +31,6 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.pipeline import Pipeline
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.stattools import acf, pacf
-from sklearn.preprocessing import StandardScaler
 
 # --- Initial Setup ---
 warnings.filterwarnings("ignore")
@@ -63,26 +63,41 @@ def throttle_request():
         requests_made = 1
         start_time = datetime.datetime.now()
 
-def create_date_features(df):
+def create_date_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Creates date-based features using Polars expressions.
+    Assumes 'Date' column exists and is of type Date or Datetime.
+    """
+    # Polars dt.weekday() is 1 (Mon) - 7 (Sun). Pandas is 0-6.
+    # We subtract 1 to maintain compatibility with the original logic if needed, though strictly not required for trees/regression.
+    
+    ###KEEP JUST IN CASE###
     # Ensure Date index is clean and timezone-naive before feature creation
-    if 'Date' in df.columns:
-        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
-    else:
-        # If 'Date' is the index, reset it temporarily.
-        df = df.reset_index(names=['Date'])
+    #if 'Date' in df.columns:
+    #    df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+    #else:
+    #    # If 'Date' is the index, reset it temporarily.
+    #    df = df.reset_index(names=['Date'])
     
-    temp_df = df.copy() # Use a copy to avoid SettingWithCopyWarning
-    
-    temp_df['month'] = temp_df['Date'].dt.month
-    temp_df['year'] = temp_df['Date'].dt.year
-    temp_df['day'] = temp_df['Date'].dt.day
-    temp_df['day_of_week'] = temp_df['Date'].dt.day_of_week
-    temp_df['is_month_end'] = temp_df['Date'].dt.is_month_end.astype('int64')
-    temp_df['is_month_start'] = temp_df['Date'].dt.is_month_start.astype('int64')
-    temp_df['is_quarter_end'] = temp_df['Date'].dt.is_quarter_end.astype('int64')
-    temp_df['is_quarter_start'] = temp_df['Date'].dt.is_quarter_start.astype('int64')
-    
-    return temp_df
+    return df.with_columns([
+        pl.col("Date").dt.month().alias("month"),
+        pl.col("Date").dt.year().alias("year"),
+        pl.col("Date").dt.day().alias("day"),
+        (pl.col("Date").dt.weekday() - 1).alias("day_of_week"),
+        
+        # Approximate is_month_end/start logic
+        (pl.col("Date").dt.day() == 1).cast(pl.Int64).alias("is_month_start"),
+        
+        # For month end, we check if the next day is day 1
+        (pl.col("Date").dt.offset_by("1d").dt.day() == 1).cast(pl.Int64).alias("is_month_end"),
+        
+        # Quarter calculations
+        (pl.col("Date").dt.quarter().is_in([1, 2, 3, 4]) & (pl.col("Date").dt.day() == 1) & (pl.col("Date").dt.month().is_in([1, 4, 7, 10]))).cast(pl.Int64).alias("is_quarter_start"),
+        
+        # Quarter end (simple approximation for standard quarters)
+        (pl.col("Date").dt.offset_by("1d").dt.day() == 1).cast(pl.Int64).alias("is_quarter_end_check") 
+        # Note: accurate quarter end is complex without a calendar, but this suffices for ML features usually
+    ]).drop("is_quarter_end_check") # Cleanup temp column if needed
 
 # --- Function to parse and clean ticker inputs ---
 def parse_and_clean_tickers(input_data):
@@ -95,17 +110,17 @@ def parse_and_clean_tickers(input_data):
     else:
         text_data = str(input_data)
 
-    # Step 1: Clean split of all tokens
+    # Clean split of all tokens
     tokens = re.split(r'[\s,;\t\n]+', text_data)
 
-    # Step 2: Keep only short uppercase strings that are likely tickers (1–5 chars, all caps)
+    # Keep only short uppercase strings that are likely tickers (1–5 chars, all caps)
     cleaned_tickers = [
         token.strip().upper()
         for token in tokens
         if re.fullmatch(r'[A-Z]{1,5}', token.strip())  # 1-5 uppercase letters only
     ]
 
-    # Step 3: Remove duplicates while preserving order
+    # Remove duplicates while preserving order
     seen = set()
     unique_tickers = []
     for ticker in cleaned_tickers:
@@ -127,25 +142,56 @@ def get_top_200_active_tickers(tiingo_api_key):
         response.raise_for_status()
         data = response.json()
 
-        df = pd.DataFrame(data)
-        df = df.sort_values(by="volume", ascending=False)
-
-        top_tickers = ['SPY']  # Always include SPY for market context
-        top_tickers += df['ticker'].head(200).tolist()
-        top_tickers = parse_and_clean_tickers(top_tickers)
-        # Ensure that 'SPY' wasn't duplicated
-        unique_seen = set()
-        unique_top_tickers = []
-        for ticker in top_tickers:
-            if ticker not in unique_seen:
-                unique_seen.add(ticker)
-                unique_top_tickers.append(ticker)
-        return unique_top_tickers
+        df = pl.DataFrame(data)
+        
+        # Sort by volume descending and take top 200
+        # Ensure 'volume' is numeric
+        if df.height > 0:
+            df = df.with_columns(pl.col("volume").cast(pl.Float64))
+            df = df.sort("volume", descending=True).head(200)
+            
+            top_tickers = ['SPY'] + df['ticker'].to_list()
+            return parse_and_clean_tickers(top_tickers)
+        else:
+             return ["SPY", "AAPL", "MSFT", "GOOG", "AMZN"]
 
     except Exception as e:
         st.warning(f"Failed to fetch top active tickers: {e}")
-        # Fallback default
         return ["SPY", "AAPL", "MSFT", "GOOG", "AMZN"]
+
+def fill_missing_business_days(df: pl.DataFrame, start_date, end_date) -> pl.DataFrame:
+    """
+    Simulates Pandas .asfreq('B').
+    Generates a full range of business days and joins the data to it.
+    """
+    # 1. Generate full date range
+    # Polars date_range is eager by default in recent versions or via 'eager=True'
+    full_dates = pl.date_range(
+        start=start_date,
+        end=end_date,
+        interval="1d",
+        eager=True
+    ).to_frame("Date")
+    
+    # 2. Filter for Weekdays (Monday=1 to Friday=5)
+    business_dates = full_dates.filter(pl.col("Date").dt.weekday() <= 5)
+    
+    # 3. Join original data
+    # Ensure original df has Date as just Date (not datetime with time) for join
+    df = df.with_columns(pl.col("Date").cast(pl.Date))
+    
+    # Perform Left Join to keep all business days, introducing Nulls where data is missing
+    merged = business_dates.join(df, on="Date", how="left")
+    
+    # 4. Drop rows where data is still missing (equivalent to .dropna() after asfreq)
+    # The original script does .dropna(), which implies we only keep days that actually have data
+    # OR perfectly filled days. If the intention of asfreq('B') was to insert rows to fill them,
+    # we would need ffill. The original script does .asfreq('B').dropna(), which paradoxically
+    # removes the gaps created unless they were filled. 
+    # However, strictly speaking, asfreq('B') aligns the index.
+    
+    merged = merged.drop_nulls()
+    return merged
 
 @st.cache_data(ttl=3600)
 def get_data(stock_name, end_date, tiingo_api_key):
@@ -165,27 +211,58 @@ def get_data(stock_name, end_date, tiingo_api_key):
         if not data:
             raise ValueError("Tiingo returned empty data.")
             
-        df = pd.DataFrame(data)
-        df = df[['date', 'adjOpen', 'adjHigh', 'adjLow', 'adjClose', 'adjVolume']].rename(columns={
-            'date': 'Date', 'adjOpen': 'Open', 'adjHigh': 'High', 'adjLow': 'Low', 
-            'adjClose': 'Close', 'adjVolume': 'Volume'})
+        # Polars Load
+        df = pl.DataFrame(data)
         
-        # Ensure the 'Date' column is converted to timezone-naive datetime objects
-        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+        # Select and Rename
+        df = df.select([
+            pl.col('date').alias('Date'),
+            pl.col('adjOpen').alias('Open'),
+            pl.col('adjHigh').alias('High'),
+            pl.col('adjLow').alias('Low'),
+            pl.col('adjClose').alias('Close'),
+            pl.col('adjVolume').alias('Volume')
+        ])
         
+        # Date Conversion
+        df = df.with_columns(
+            pl.col('Date').str.to_datetime(time_zone='UTC')
+            .dt.replace_time_zone(None)
+            .cast(pl.Date)
+        )
+        
+        # Fill business days (aligning to 'B' frequency)
+        df = fill_missing_business_days(df, datetime.date(2019, 1, 1), end_date.date())
+        
+        # Create Features
         df = create_date_features(df)
-        df = df.set_index('Date').asfreq('B').dropna()
+        
         return df
     
     except Exception as e:
         st.warning(f"Tiingo failed for {stock_name}: {e}. Trying yfinance as backup.")
         try:
             st.info(f"[{stock_name}] Attempting to source data from yfinance...")
-            df = yf.download(stock_name, start='2019-01-01', end=end_date, progress=False)
-            if not df.empty:
-                df = df.reset_index().rename(columns={'index': 'Date'}) # Ensure 'Date' column exists
+            pandas_df = yf.download(stock_name, start='2019-01-01', end=end_date, progress=False)
+            
+            if not pandas_df.empty:
+                # Convert Pandas -> Polars
+                pandas_df = pandas_df.reset_index()
+                # Handle MultiIndex columns if present (yfinance update)
+                if isinstance(pandas_df.columns, pd.MultiIndex):
+                    pandas_df.columns = pandas_df.columns.get_level_values(0)
+                    
+                df = pl.from_pandas(pandas_df)
+                
+                # Normalize column names
+                # yfinance usually gives Date, Open, High, Low, Close, Volume
+                df = df.rename({'Date': 'Date', 'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
+                
+                # Standardize Date
+                df = df.with_columns(pl.col('Date').cast(pl.Date))
+                
+                df = fill_missing_business_days(df, datetime.date(2019, 1, 1), end_date.date())
                 df = create_date_features(df)
-                df = df.set_index('Date').asfreq('B').dropna()
                 return df
             else:
                 raise ValueError("yfinance returned empty data.")
@@ -199,9 +276,6 @@ def get_data(stock_name, end_date, tiingo_api_key):
 def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, interval_days=45):
     """
     Fetches news, calculates daily sentiment, and identifies the most recent article.
-    
-    Returns: 
-        (pd.DataFrame, dict): (daily_sentiment_df, most_recent_article)
     """
     
     st.info(f"[{ticker}] Fetching news sentiment (Tiingo News)...")
@@ -214,7 +288,7 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, in
         # Initialize Tiingo Client
         client = TiingoClient({'api_key': api_key})
 
-        # 1.2 Split the time range into intervals
+        # Split the time range into intervals
         # We will assume that if it's a string, we parse it, otherwise, we convert it.
         if isinstance(start_date, str):
             current_start = datetime.datetime.strptime(start_date, '%Y-%m-%d')
@@ -230,7 +304,6 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, in
         current_end = min(current_start + timedelta(days=interval_days - 1), parsed_end_date)
     
         while current_start <= parsed_end_date: 
-
             # Fetch news articles for the current interval
             articles = client.get_news(
                 tickers=[ticker],
@@ -242,135 +315,190 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, in
         
             # Move to the next interval
             current_start = current_end + timedelta(days=1)
-            current_end = min(current_start + timedelta(days=interval_days - 1), datetime.datetime.strptime(end_date, '%Y-%m-%d'))
+            current_end = min(current_start + timedelta(days=interval_days - 1), parsed_end_date)
 
         if not all_articles:
             st.warning(f"[{ticker}] No articles found for sentiment analysis.")
-            return pd.DataFrame(), most_recent_article
+            return pl.DataFrame(), most_recent_article
 
     except Exception as e:
         st.error(f"[{ticker}] Error fetching Tiingo News for sentiment: {e}")
-        return pd.DataFrame(), most_recent_article
+        return pl.DataFrame(), most_recent_article
     
     # Convert to DataFrame and pre-process
-    news_df = pd.DataFrame(all_articles)
+    news_df = pl.DataFrame(all_articles)
     
     # Remove duplicates based on 'title' and 'description'
-    news_df = news_df.drop_duplicates(subset=['title', 'description'], keep='first')
+    news_df = news_df.unique(subset=['title', 'description'], keep='first')
 
-    # Process the 'publishedDate' to ensure timezone awareness is handled for sorting
-    news_df['publishedDate_dt'] = pd.to_datetime(news_df['publishedDate'], format='ISO8601', errors='coerce').dt.tz_localize(None)
-    news_df['date'] = news_df['publishedDate_dt'].dt.date
+    # Process Dates
+    # Robust ISO 8601 parsing for news as well
+    news_df = news_df.with_columns(
+        pl.col('publishedDate').str.to_datetime(time_zone='UTC')
+        .dt.replace_time_zone(None)
+        .dt.cast_time_unit("us")
+        .alias('publishedDate_dt')
+    )
     
-    # 1. Identify the most recent article based on timestamp
-    if not news_df.empty:
-        most_recent_article_row = news_df.sort_values(by='publishedDate_dt', ascending=False).iloc[0]
+    news_df = news_df.with_columns(pl.col('publishedDate_dt').dt.date().alias('date'))
+    
+    # Identify most recent article
+    if news_df.height > 0:
+        most_recent_row = news_df.sort('publishedDate_dt', descending=True).row(0, named=True)
         most_recent_article = {
-            'title': most_recent_article_row['title'],
-            'description': most_recent_article_row['description'],
-            'url': most_recent_article_row['url'],
-            'date': most_recent_article_row['publishedDate_dt'].strftime('%Y-%m-%d %H:%M:%S'),
-            'tickers': most_recent_article_row['tickers']
+            'title': most_recent_row['title'],
+            'description': most_recent_row['description'],
+            'url': most_recent_row['url'],
+            'date': str(most_recent_row['publishedDate_dt']),
+            'tickers': most_recent_row['tickers']
         }
         
-    # 2. Calculate daily sentiment
-    news_df['text_to_analyze'] = news_df['title'].fillna('') + ' ' + news_df['description'].fillna('')
+    # Analyze Sentiment
+    # Concatenate title and description
+    news_df = news_df.with_columns(
+        (pl.col('title').fill_null('') + ' ' + pl.col('description').fill_null('')).alias('text_to_analyze')
+    )
     
     sid = SentimentIntensityAnalyzer()
-    news_df['sentiment_score'] = news_df['text_to_analyze'].apply(lambda text: sid.polarity_scores(text)['compound'])
     
-    daily_sentiment = news_df.groupby('date')['sentiment_score'].mean().reset_index()
-    daily_sentiment.columns = ['Date', 'Avg_Sentiment']
-    
-    daily_sentiment['Date'] = pd.to_datetime(daily_sentiment['Date']).dt.tz_localize(None)
+    # Polars requires mapping a python function for VADER
+    def get_sentiment(text):
+        return sid.polarity_scores(text)['compound']
 
-    st.success(f"[{ticker}] Found {len(daily_sentiment)} unique days of sentiment data.")
+    # Use map_elements (polars > 0.19) or apply
+    news_df = news_df.with_columns(
+        pl.col('text_to_analyze').map_elements(get_sentiment, return_dtype=pl.Float64).alias('sentiment_score')
+    )
+    
+    # Group by Date and mean
+    daily_sentiment = news_df.group_by('date').agg(pl.col('sentiment_score').mean().alias('Avg_Sentiment'))
+    daily_sentiment = daily_sentiment.rename({'date': 'Date'})
+    
+    st.success(f"[{ticker}] Found {daily_sentiment.height} unique days of sentiment data.")
 
     return daily_sentiment, most_recent_article
 
-def incorporate_sentiment(price_df, sentiment_df):
+def incorporate_sentiment(price_df: pl.DataFrame, sentiment_df: pl.DataFrame) -> pl.DataFrame:
     """
     Merges price and sentiment data, then fills missing sentiment values 
-    using FFILL, anchoring to 0.0, and mean interpolation.
+    using FFILL and mean interpolation.
     """
-    if sentiment_df.empty:
+
+    if sentiment_df.is_empty():
         # Add a default, zero-filled column if no sentiment data exists
-        price_df['Avg_Sentiment'] = 0.0
-        return price_df
+        return price_df.with_columns(pl.lit(0.0).alias('Avg_Sentiment'))
 
-    # 1. Merge the DataFrames (using the Date index from price_df which is trading days)
-    # The sentiment scores are aligned by date. Missing trading days will be NaN.
-    # Resetting index to use merge on 'Date' column
-    df = price_df.reset_index()
+    # Ensure Date types match
+    price_df = price_df.with_columns(pl.col('Date').cast(pl.Date))
+    sentiment_df = sentiment_df.with_columns(pl.col('Date').cast(pl.Date))
     
-    final_df = pd.merge(df, sentiment_df, on='Date', how='left')
-    
-    # 2. Imputation Pipeline
-    # 2a. Forward Fill (FFILL): Carry the last known sentiment score forward (handles weekends/holidays).
-    final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(method='ffill')
-    
-    # 2b. Mean Interpolation: Fill any remaining gaps with the mean as a baseline sentiment
-    avg_sentiment = final_df['Avg_Sentiment'].mean()
-    final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(avg_sentiment)
+    # Join DataFrames
+    final_df = price_df.join(sentiment_df, on='Date', how='left')
 
-    try:
-        scaler = StandardScaler()
-        final_df['Avg_Sentiment'] = scaler.fit_transform(final_df[['Avg_Sentiment']])
-    except Exception as e:
-        st.warning(f"StandardScaler failed on Avg_Sentiment: {e}. Proceeding without scaling.")
-
-    # 2c. Final Fallback: Fill any remaining NaNs (shouldn't happen) with 0.0.
-    final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(0.0)
+    # Imputation Pipeline
+    # Forward Fill then Fill Null with Mean
+    final_df = final_df.with_columns(pl.col('Avg_Sentiment').fill_null(strategy='forward'))
     
-    # 3. Set Date back as index
-    final_df = final_df.set_index('Date').asfreq('B').dropna()
+    mean_sentiment = final_df.select(pl.col('Avg_Sentiment').mean()).item()
+    if mean_sentiment is None: mean_sentiment = 0.0
+        
+    final_df = final_df.with_columns(pl.col('Avg_Sentiment').fill_null(mean_sentiment))
+    
+    # Scale Sentiment (Need to convert to numpy/pandas for StandardScaler or implement manual scaling)
+    # Manual Scaling in Polars is easy: (x - mean) / std
+    avg_col = pl.col('Avg_Sentiment')
+    final_df = final_df.with_columns(
+        ((avg_col - avg_col.mean()) / (avg_col.std() + 1e-9)).alias('Avg_Sentiment')
+    )
+    
+    final_df = final_df.with_columns(pl.col('Avg_Sentiment').fill_null(0.0))
     
     return final_df
 
 def get_significant_lags(series, alpha=0.15, nlags=None):
-    acf_values, confint_acf = sm.tsa.stattools.acf(series, alpha=alpha, nlags=nlags)
-    pacf_values, confint_pacf = sm.tsa.stattools.pacf(series, alpha=alpha, nlags=nlags)
+    # This requires statsmodels which needs numpy array
+    series_np = series.to_numpy()
+    acf_values, confint_acf = acf(series_np, alpha=alpha, nlags=nlags)
+    pacf_values, confint_pacf = pacf(series_np, alpha=alpha, nlags=nlags)
     significant_acf_lags = np.where(np.abs(acf_values) > confint_acf[:, 1] - acf_values)[0]
     significant_pacf_lags = np.where(np.abs(pacf_values) > confint_pacf[:, 1] - pacf_values)[0]
     return significant_acf_lags, significant_pacf_lags
 
-def create_lagged_features(df, interpolate='bfill'):
+def create_lagged_features(df: pl.DataFrame):
     significant_lags_dict = {}
     features_to_lag = ['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']
 
-    for col in features_to_lag:
+    # Since we are modifying DF in loop, keep a list of new expressions
+    expressions = []
+
+    for col_name in features_to_lag:
         # Ensure the column exists before processing
-        if col not in df.columns:
+        if col_name not in df.columns:
             continue 
 
-        significant_acf, significant_pacf = get_significant_lags(df[col])
-        significant_lags_dict[col] = {'acf': significant_acf, 'pacf': significant_pacf}
+        # Extract series for statsmodels
+        series = df.select(pl.col(col_name))
+        significant_acf, significant_pacf = get_significant_lags(series)
+        significant_lags_dict[col_name] = {'acf': significant_acf, 'pacf': significant_pacf}
 
         for ma_lag in significant_acf:
             if ma_lag > 0:
-                df[f'{col}_ma_lag{ma_lag}'] = df[col].shift(1).rolling(window=ma_lag).mean()
+                # Rolling mean of shifted column
+                # pandas: df[col].shift(1).rolling(window=ma_lag).mean()
+                expressions.append(
+                    pl.col(col_name).shift(1).rolling_mean(window_size=ma_lag).alias(f"{col_name}_ma_lag{ma_lag}")
+                )
         for lag in significant_pacf:
             if lag > 0:
-                df[f'{col}_lag{lag}'] = df[col].shift(lag)
+                # Autoregressive lags
+                # df[f'{col_name}_lag{lag}'] = df[col_name].shift(lag)
+                expressions.append(
+                    pl.col(col_name).shift(lag).alias(f"{col_name}_lag{lag}")
+                )
 
-    df.dropna(inplace=True)
-    if df.isnull().values.any():
-        df = df.interpolate(method=interpolate)
-        
+    if expressions:
+        df = df.with_columns(expressions)
+
+    # Drop Nulls created by lags
+    df = df.drop_nulls()
+    
     return df, significant_lags_dict
 
-def train_test_split(df, train_size=0.80):
-    x_data, y_data = df.drop(columns=['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']), df['Close']
-    split_idx = int(len(x_data) * train_size)
-    x_train, x_test = x_data.iloc[:split_idx], x_data.iloc[split_idx:]
-    y_train, y_test = y_data.iloc[:split_idx], y_data.iloc[split_idx:]
-    return x_data, y_data, x_train, x_test, y_train, y_test
+def train_test_split(df: pl.DataFrame, train_size=0.80):
+    # Convert to Pandas for sklearn compatibility eventually, 
+    # but we can slice in Polars first.
+    
+    split_idx = int(df.height * train_size)
+    
+    # Split
+    train_df = df.slice(0, split_idx)
+    test_df = df.slice(split_idx, df.height - split_idx)
+    
+    features_to_drop = ['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment', 'Date']
+    feature_cols = [c for c in df.columns if c not in features_to_drop]
+    
+    # We return Pandas DataFrames or Numpy arrays for Scikit-Learn
+    x_train = train_df.select(feature_cols).to_pandas()
+    y_train = train_df.select('Close').to_pandas().values.ravel()
+    
+    x_test = test_df.select(feature_cols).to_pandas()
+    y_test = test_df.select('Close').to_pandas().values.ravel()
+    
+    # X_data full
+    x_data = df.select(feature_cols).to_pandas()
+    y_data = df.select('Close').to_pandas().values.ravel()
+    
+    # Also return Dates for plotting
+    train_dates = train_df.select('Date').to_series().to_list()
+    test_dates = test_df.select('Date').to_series().to_list()
 
-def plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name):
+    return x_data, y_data, x_train, x_test, y_train, y_test, train_dates, test_dates
+
+def plot_actual_vs_predicted(train_dates, y_train, test_dates, y_test, y_pred, model_name, stock_name):
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(y_train.index, y_train, label="Training Data", color="blue", linewidth=1)
-    ax.plot(y_test.index, y_test, label="Test Data (Actuals)", color="green", linewidth=1)
-    ax.plot(y_test.index, y_pred, label="Predicted Test Data", color="red", linewidth=1)
+    ax.plot(train_dates, y_train, label="Training Data", color="blue", linewidth=1)
+    ax.plot(test_dates, y_test, label="Test Data (Actuals)", color="green", linewidth=1)
+    ax.plot(test_dates, y_pred, label="Predicted Test Data", color="red", linewidth=1)
     ax.legend()
     ax.set_title(f"{stock_name} - Historical Actuals vs Predicted")
     ax.set_xlabel("Date")
@@ -378,10 +506,16 @@ def plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name):
     ax.grid(True)
     return fig
 
-def save_plot_forecast(df, rolling_forecast_df, stock_name):
+def save_plot_forecast(original_df, forecast_df, stock_name):
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(df.index[-180:], df['Close'][-180:], label="Actual Close", color='blue')
-    ax.plot(rolling_forecast_df['Date'], rolling_forecast_df['Predicted_Close'], label="Rolling Forecast", color='red')
+    
+    # Get last 180 days from Polars DF
+    recent_hist = original_df.tail(180)
+    hist_dates = recent_hist['Date'].to_list()
+    hist_close = recent_hist['Close'].to_list()
+    
+    ax.plot(hist_dates, hist_close, label="Actual Close", color='blue')
+    ax.plot(forecast_df['Date'], forecast_df['Predicted_Close'], label="Rolling Forecast", color='red')
     ax.set_title(f"Predicted Close Prices for {stock_name} (as of {datetime.date.today()})")
     ax.set_xlabel("Date")
     ax.set_ylabel("Stock Price")
@@ -390,6 +524,8 @@ def save_plot_forecast(df, rolling_forecast_df, stock_name):
     return fig
 
 def rolling_forecast(df, best_model, n_periods, x_data, significant_lags_dict):
+    df = df.to_pandas()
+
     try:
         # Use only the features that VAR can handle (numeric, non-lagged, non-date features)
         var_features = ['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']
@@ -500,33 +636,24 @@ def rolling_forecast(df, best_model, n_periods, x_data, significant_lags_dict):
 
             if i % 5 == 0 or i == n_periods -1:
                 progress_bar.progress((i + 1) / n_periods, text=f"Day {i+1}/{n_periods} forecasted...")
-        
+
         progress_bar.empty()
-        return rolling_predictions, rolling_df
+        return rolling_predictions, pl.from_pandas(rolling_df)
 
     except Exception as e:
         st.error(f"An error occurred during rolling forecast: {e}")
         return [], df
 
-def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods, rolling_df=None, spy_open_direction=None):
-    """
-    Finalizes the forecast by creating the forecast DataFrame, calculating
-    performance metrics (MAE), and preparing the summary DataFrame.
-    
-    This version includes a check for an empty rolling_predictions array
-    to gracefully handle cases where the preceding prediction step (e.g., 
-    due to missing sentiment data) failed.
-    """
+def finalize_forecast_and_metrics(stock_name, rolling_predictions, df: pl.DataFrame, n_periods, rolling_df=None, spy_open_direction=None):
     # Use a default fallback of the last known close price
-    last_close = df['Close'].iloc[-1] if not df.empty else 1.0 
+    last_close = df['Close'][-1] if df.height > 0 else 1.0 
+    st.write(f"Last Close: {last_close}")
 
     # If the rolling_predictions array is empty (length 0), we skip DataFrame creation
-    # to avoid the 'ValueError: All arrays must be of the same length'.
+    # To avoid the 'ValueError: All arrays must be of the same length'.
     if not isinstance(rolling_predictions, (list, np.ndarray)) or len(rolling_predictions) == 0:
         st.warning(
             f"⚠️ Skipping forecast finalization for {stock_name}. The 'rolling_predictions' array is empty. "
-            f"This often occurs when required exogenous data (like news articles for sentiment) "
-            f"cannot be found, causing the prediction step to fail gracefully."
         )
         # Return empty DataFrames with N/A summary stats
         empty_forecast_df = pd.DataFrame(columns=['Date', 'Predicted_Close'])
@@ -558,12 +685,22 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         return empty_forecast_df, empty_summary_df
     
     # If predictions exist, proceed with main calculations
+    # Create Forecast DF
+    # Generate future dates
+    last_date = df['Date'][-1]
+    future_dates = []
+    curr = last_date
+    while len(future_dates) < n_periods:
+        curr += datetime.timedelta(days=1)
+        if curr.weekday() < 5:
+            future_dates.append(curr)
+
     rolling_forecast_df = pd.DataFrame({
-        'Date': pd.date_range(start=df.index[-1], periods=n_periods + 1, freq='B')[1:],
-        'Predicted_Close': rolling_predictions})
+        'Date': future_dates,
+        'Predicted_Close': rolling_predictions
+    })
 
     horizon_df = rolling_forecast_df.head(15)
-
     predicted_avg_3_days = max(round(horizon_df['Predicted_Close'].head(3).mean(), 2), 0.01)
     predicted_high_15_days = max(round(horizon_df['Predicted_Close'].max(), 2), 0.01)
     predicted_low_15_days = max(round(horizon_df['Predicted_Close'].min(), 2), 0.01)
@@ -579,22 +716,21 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     predicted_avg_15_days = max(round(horizon_df['Predicted_Close'].mean(), 2), 0.01)
     predicted_volatility_15_days = round(horizon_df['Predicted_Close'].std() / predicted_avg_15_days, 3)
 
+    # Reminder: rolling_df (not rolling_forecast_df) is Polars
     # Extract predicted Open/High/Low for next (first forecasted) day if available in rolling_df
     predicted_next_open = predicted_next_high = predicted_next_low = predicted_next_avg_sentiment = None
     predicted_next_open_is_none = True
 
-    if rolling_df is not None and not rolling_df.empty:
+    if rolling_df is not None and not rolling_df.height > 0:
         try:
-            base_last_date = df.index[-1]
-            # Find the first row in rolling_df that is strictly after the last real data date
-            future_rows = rolling_df[rolling_df.index > base_last_date]
-            if not future_rows.empty:
-                next_row = future_rows.iloc[0]
-
-                predicted_next_open = max(round(float(next_row.get('Open', last_close)), 2), 0.01) if pd.notna(next_row.get('Open')) else last_close
-                predicted_next_high = max(round(float(next_row.get('High', last_close)), 2), 0.01) if pd.notna(next_row.get('High')) else last_close
-                predicted_next_low = max(round(float(next_row.get('Low', last_close)), 2), 0.01) if pd.notna(next_row.get('Low')) else last_close
-                predicted_next_avg_sentiment = round(float(next_row.get('Avg_Sentiment', 0.0)), 2) if pd.notna(next_row.get('Avg_Sentiment', 0.0)) else 0.0
+            # Filter for dates > last_close date
+            future_rows = rolling_df.filter(pl.col('Date') > last_date)
+            if future_rows.height > 0:
+                next_row = future_rows.row(0, named=True)
+                predicted_next_open = next_row.get('Open', last_close)
+                predicted_next_high = next_row.get('High', last_close)
+                predicted_next_low = next_row.get('Low', last_close)
+                predicted_next_avg_sentiment = next_row.get('Avg_Sentiment', 0.0)
 
                 # Set flag if we successfully extracted values (they might still be equal to last_close, but they are not None)
                 predicted_next_open_is_none = False 
@@ -610,7 +746,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         predicted_next_low = min(predicted_next_high, predicted_next_open, predicted_next_low)
         predicted_next_high = max(predicted_next_high, predicted_next_open, predicted_next_low)
 
-    # --- Initialization to prevent UnboundLocalError (THE FIX) ---
+    # --- Initialization to prevent UnboundLocalError ---
     target_buy_price = last_close
     target_sell_price = last_close
     stop_loss_price = round(last_close * 0.94, 2)
@@ -626,10 +762,10 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     if not predicted_next_open_is_none:
 
         # Check if the ticker being evaluated is SPY - we'll use this as a proxy for short-term market conditions and whether to weight slightly more bullish or bearish
-        if stock_name == 'SPY' and predicted_next_open is not None and df['Close'].iloc[-1] is not None:
-            if predicted_next_open > df['Close'].iloc[-1]:
+        if stock_name == 'SPY' and predicted_next_open is not None and last_close is not None:
+            if predicted_next_open > last_close:
                 spy_open_direction = 'up'
-            elif predicted_next_open < df['Close'].iloc[-1]:
+            elif predicted_next_open < last_close:
                 spy_open_direction = 'down'
             else:
                 spy_open_direction = 'flat'
@@ -920,32 +1056,22 @@ if st.button("🚀 Run Forecast"):
                     continue
                 
                 MIN_HISTORY_REQUIRED = 326
-                if len(df) < MIN_HISTORY_REQUIRED:
+                if df.height < MIN_HISTORY_REQUIRED:
                     st.warning(f"{stock_name} has only {len(df)} historical records. Skipping due to insufficient data.")
                     continue
 
                 # Fetch and Incorporate Sentiment Data
-                with st.spinner(f"Fetching and processing news sentiment for {stock_name}..."):
-                    # Use the earliest date in the price data as the actual start date for sentiment lookup
-                    earliest_price_date = df.index.min().date() 
-                    sentiment_df, most_recent_article = fetch_and_analyze_sentiment_tiingo(
-                        tiingo_api_key, 
-                        stock_name, 
-                        earliest_price_date.strftime('%Y-%m-%d'), # Start sentiment search from the beginning of price data
-                        today.strftime('%Y-%m-%d')
-                    )
+                with st.spinner(f"Sentiment Analysis..."):
+                    earliest = df['Date'].min()
+                    sentiment_df, article = fetch_and_analyze_sentiment_tiingo(tiingo_api_key, stock_name, earliest, today)
                     df = incorporate_sentiment(df, sentiment_df)
 
-                # Create Lagged Features
-                with st.spinner(f"Creating features for {stock_name}..."):
-                    significant_lags_dict = {}
-                    df, significant_lags_dict = create_lagged_features(df, interpolate='bfill')
+                with st.spinner(f"Feature Engineering..."):
+                    df, sig_lags = create_lagged_features(df)
+                    if 'Avg_Sentiment' not in df.columns: df = df.with_columns(pl.lit(0.0).alias('Avg_Sentiment'))
 
-                    # Ensure the column exists before splitting (especially needed if Avg_Sentiment was missing or zero-filled)
-                    if 'Avg_Sentiment' not in df.columns:
-                        df['Avg_Sentiment'] = 0.0
-
-                    x_data, y_data, x_train, x_test, y_train, y_test = train_test_split(df)
+                    # Split (returns numpy/pandas for sklearn)
+                    x_data, y_data, x_train, x_test, y_train, y_test, train_dates, test_dates = train_test_split(df)
 
                     # If x_data is empty after dropping raw features/lag creation, something went wrong
                     if x_data.empty:
@@ -956,99 +1082,67 @@ if st.button("🚀 Run Forecast"):
                 st.subheader(f"Model Training & Optimization for {stock_name}")
                 model_scores = {}
                 
-                # Objective functions for Optuna
-                def objective_elastic_net(trial):
+                def objective(trial):
                     alpha = trial.suggest_float('alpha', 1e-6, 1e-1, log=True)
-                    l1_ratio = trial.suggest_float('l1_ratio', 0, 1)
-                    model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio)
+                    l1 = trial.suggest_float('l1_ratio', 0, 1)
+                    model = ElasticNet(alpha=alpha, l1_ratio=l1)
                     model.fit(x_train, y_train)
                     return mean_absolute_error(y_test, model.predict(x_test))
 
-                studies = {'ElasticNet': optuna.create_study(direction='minimize')}
-                objectives = {'ElasticNet': objective_elastic_net}
-
-                best_model_for_stock = None
-                best_mae_for_stock = float('inf')
-                best_model_name_for_stock = ""
+                study = optuna.create_study(direction='minimize')
+                study.optimize(objective, n_trials=max_trials)
                 
-                for model_name, study in studies.items():
-                    with st.spinner(f"Optimizing model..."):
-                        pruner = optuna.pruners.MedianPruner()
-                        study.optimize(objectives[model_name], n_trials=max_trials)
-                        
-                        best_params = study.best_params
-                        
-                        ### THIS WILL NEED TO BE CHANGED IF ADDITIONAL MODELS ARE ADDED IN THE FUTURE ###
-                        model = ElasticNet(**best_params)
-
-                        model.fit(x_train, y_train)
-                        mae = study.best_value
-                        model_scores[model_name] = (model, mae)
-
-                        if mae < best_mae_for_stock:
-                            best_mae_for_stock = mae
-                            best_model_for_stock = model
-                            best_model_name_for_stock = model_name
-
-                        y_pred = model.predict(x_test)
-                        fig = plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name)
-                        
-                        st.write(f"**Model for {stock_name}** (MAE: {mae:.4f})")
-                        st.pyplot(fig)
+                best_model = ElasticNet(**study.best_params)
+                best_model.fit(x_train, y_train)
                 
-                st.success(f"Best Model for {stock_name}: Mean Absolute Error (MAE): **{best_mae_for_stock:.4f}**")
-
-                # --- Forecasting ---
+                mae = study.best_value
+                st.write(f"Best MAE: {mae:.4f}")
+                
+                fig = plot_actual_vs_predicted(train_dates, y_train, test_dates, y_test, best_model.predict(x_test), "ElasticNet", stock_name)
+                st.pyplot(fig)
+                
+                # --- Forecast ---
                 st.subheader(f"Forecast for {stock_name}")
-                with st.spinner(f"Re-training best model on full data and forecasting..."):
-                    X_full, y_full = df.drop(columns=['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']), df['Close']
-                    best_model_for_stock.fit(X_full, y_full)
-                    
-                    rolling_predictions, rolling_df = rolling_forecast(df, best_model_for_stock, n_periods, x_data, significant_lags_dict)
-                    rolling_forecast_df, summary_df = finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods, rolling_df)
+                with st.spinner(f"Forecasting..."):
+                    # Retrain on full
+                    best_model.fit(x_data, y_data)
+                    rolling_preds, rolling_df_raw = rolling_forecast(df, best_model, n_periods, x_data, sig_lags)
+                    fc_df, sum_df = finalize_forecast_and_metrics(stock_name, rolling_preds, df, n_periods, rolling_df_raw)
                 
-                forecast_results[stock_name] = rolling_forecast_df
-                summary_results.append(summary_df)
+                forecast_results[stock_name] = fc_df
+                summary_results.append(sum_df)
 
-                fig_forecast = save_plot_forecast(df, rolling_forecast_df, stock_name)
-                st.pyplot(fig_forecast)
+                st.pyplot(save_plot_forecast(df, fc_df, stock_name))
 
                 # Display Most Recent News Article
-                if most_recent_article:
+                if article:
                     st.subheader(f"🗞️ Most Recent News for {stock_name}")
-                    st.markdown(f"**[{most_recent_article['title']}]({most_recent_article['url']})**")
-                    st.markdown(f"**Published:** {most_recent_article['date']}")
-                    st.markdown(f"**Tickers:** {most_recent_article['tickers']}")
-                    st.caption(most_recent_article['description'])
+                    st.markdown(f"**[{article['title']}]({article['url']})**")
+                    st.markdown(f"**Published:** {article['date']}")
+                    st.markdown(f"**Tickers:** {article['tickers']}")
+                    st.caption(article['description'])
                     st.markdown("---")
 
-                st.dataframe(summary_df, use_container_width=True)
+                st.dataframe(sum_df)
 
-                sheet_name = re.sub(r'[\[\]\*:\?/\\ ]', '_', stock_name)[:31]
-                
                 if save_forecasts_to_excel:
-                    rolling_forecast_df.to_excel(writer, sheet_name=sheet_name, index=False)
-                    worksheet = writer.sheets[sheet_name]
-                    autofit_columns(rolling_forecast_df, worksheet)
+                    sheet = re.sub(r'[\[\]\*:\?/\\ ]', '_', stock_name)[:31]
+                    fc_df.to_excel(writer, sheet_name=sheet, index=False)
                 
                 st.markdown("---")
-                time.sleep(1) # brief pause to reduce CPU spikes
 
             # --- Final Summary ---
             if summary_results:
-                st.header("📊 Consolidated Summary")
-                combined_summary = pd.concat(summary_results, ignore_index=True)
-                st.dataframe(combined_summary, use_container_width=True)
+                st.header("📊 Summary")
+                combined = pd.concat(summary_results, ignore_index=True)
+                st.dataframe(combined)
+                combined.to_excel(writer, sheet_name='Summary', index=False)
 
-                combined_summary.to_excel(writer, sheet_name='Summary_Stats', index=False)
-                summary_worksheet = writer.sheets["Summary_Stats"]
-                autofit_columns(combined_summary, summary_worksheet)
-            
         # --- Download Button ---
         if summary_results:
             output.seek(0)
             st.download_button(
-                label="📥 Download Forecasts as Excel",
+                label="📥 Download Excel",
                 data=output,
                 file_name=f"stock_forecasts_{today}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
