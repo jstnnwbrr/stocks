@@ -155,7 +155,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
         throttle_request()
         url = f"https://api.tiingo.com/tiingo/daily/{stock_name}/prices"
         headers = {'Content-Type': 'application/json', 'Authorization': f'Token {tiingo_api_key}'}
-        params = {'startDate': '2019-01-01', 'endDate': end_date.strftime('%Y-%m-%d'), 'resampleFreq': 'daily'}
+        params = {'startDate': '2023-01-01', 'endDate': end_date.strftime('%Y-%m-%d'), 'resampleFreq': 'daily'}
         response = requests.get(url, headers=headers, params=params)
         
         if response.status_code != 200:
@@ -181,7 +181,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
         st.warning(f"Tiingo failed for {stock_name}: {e}. Trying yfinance as backup.")
         try:
             st.info(f"[{stock_name}] Attempting to source data from yfinance...")
-            df = yf.download(stock_name, start='2019-01-01', end=end_date, progress=False)
+            df = yf.download(stock_name, start='2023-01-01', end=end_date, progress=False)
             if not df.empty:
                 df = df.reset_index().rename(columns={'index': 'Date'}) # Ensure 'Date' column exists
                 df = create_date_features(df)
@@ -236,7 +236,7 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, in
                 tickers=[ticker],
                 startDate=current_start.strftime('%Y-%m-%d'),
                 endDate=current_end.strftime('%Y-%m-%d'),
-                limit=1000 
+                limit=150
             )
             all_articles.extend(articles)
         
@@ -327,7 +327,7 @@ def incorporate_sentiment(price_df, sentiment_df):
     
     return final_df
 
-def get_significant_lags(series, alpha=0.15, nlags=None):
+def get_significant_lags(series, alpha=0.05, nlags=None):
     acf_values, confint_acf = sm.tsa.stattools.acf(series, alpha=alpha, nlags=nlags)
     pacf_values, confint_pacf = sm.tsa.stattools.pacf(series, alpha=alpha, nlags=nlags)
     significant_acf_lags = np.where(np.abs(acf_values) > confint_acf[:, 1] - acf_values)[0]
