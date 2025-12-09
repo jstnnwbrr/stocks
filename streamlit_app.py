@@ -764,8 +764,8 @@ def autofit_columns(df, worksheet):
 # --- Main App UI ---
 st.title("📈 Stock Price Forecasting Tool")
 
-# Get API key from environment variable or secrets
-tiingo_api_key = os.getenv("TIINGO_API_KEY", st.secrets.get("tiingo_api_key"))
+# Get API key from environment variable
+tiingo_api_key = os.getenv("TIINGO_API_KEY")
 
 # --- Sidebar for Inputs ---
 with st.sidebar:
