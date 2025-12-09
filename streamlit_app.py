@@ -133,6 +133,7 @@ def get_top_200_active_tickers(tiingo_api_key):
         top_tickers = ['SPY']  # Always include SPY for market context
         top_tickers += df['ticker'].head(200).tolist()
         top_tickers = parse_and_clean_tickers(top_tickers)
+        
         # Ensure that 'SPY' wasn't duplicated
         unique_seen = set()
         unique_top_tickers = []
@@ -327,9 +328,10 @@ def incorporate_sentiment(price_df, sentiment_df):
     
     return final_df
 
+# --- Forecasting Helper Functions ---
 def get_significant_lags(series, alpha=0.05, nlags=None):
-    acf_values, confint_acf = sm.tsa.stattools.acf(series, alpha=alpha, nlags=nlags)
-    pacf_values, confint_pacf = sm.tsa.stattools.pacf(series, alpha=alpha, nlags=nlags)
+    acf_values, confint_acf = acf(series, alpha=alpha, nlags=nlags)
+    pacf_values, confint_pacf = pacf(series, alpha=alpha, nlags=nlags)
     significant_acf_lags = np.where(np.abs(acf_values) > confint_acf[:, 1] - acf_values)[0]
     significant_pacf_lags = np.where(np.abs(pacf_values) > confint_pacf[:, 1] - pacf_values)[0]
     return significant_acf_lags, significant_pacf_lags
@@ -759,15 +761,11 @@ def autofit_columns(df, worksheet):
         column_width = max(df[column].astype(str).map(len).max(), len(column)) + 3
         worksheet.set_column(i, i, column_width)
 
-# --- Streamlit App UI ---
+# --- Main App UI ---
 st.title("📈 Stock Price Forecasting Tool")
-st.markdown("""
-This application uses machine learning to forecast stock prices. 
-Enter stock tickers by pasting them into the text box or by uploading a file.
-""")
 
-# Get API key from environment variable
-tiingo_api_key = os.getenv("TIINGO_API_KEY")
+# Get API key from environment variable or secrets
+tiingo_api_key = os.getenv("TIINGO_API_KEY", st.secrets.get("tiingo_api_key"))
 
 # --- Sidebar for Inputs ---
 with st.sidebar:
