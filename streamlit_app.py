@@ -1,9 +1,3 @@
-# forecasting_app.py
-# To run this app, save it as a python file (e.g., app.py) and run: streamlit run app.py
-# Make sure to set the TIINGO_API_KEY environment variable before running.
-# Make sure to install all necessary libraries:
-# pip install streamlit pandas numpy scikit-learn statsmodels optuna yfinance requests matplotlib xlsxwriter openpyxl
-
 import streamlit as st
 import datetime
 import logging
@@ -12,9 +6,7 @@ import numpy as np
 import optuna
 import os
 import pandas as pd
-import random
 import requests
-import statsmodels.api as sm
 import time
 import warnings
 import yfinance as yf
@@ -27,7 +19,6 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from tiingo import TiingoClient
 from sklearn.linear_model import ElasticNet
 from sklearn.metrics import mean_absolute_error
-from sklearn.pipeline import Pipeline
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.stattools import acf, pacf
 from sklearn.preprocessing import StandardScaler
@@ -43,8 +34,6 @@ try:
 except LookupError:
     st.info("Downloading VADER lexicon...")
     nltk.download('vader_lexicon')
-
-# --- Helper Functions from Original Script ---
 
 # Throttling for API requests
 MAX_REQUESTS_PER_HOUR = 10000
@@ -215,7 +204,7 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, in
         # Initialize Tiingo Client
         client = TiingoClient({'api_key': api_key})
 
-        # 1.2 Split the time range into intervals
+        # Split the time range into intervals
         # We will assume that if it's a string, we parse it, otherwise, we convert it.
         if isinstance(start_date, str):
             current_start = datetime.datetime.strptime(start_date, '%Y-%m-%d')
@@ -263,7 +252,7 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, in
     news_df['publishedDate_dt'] = pd.to_datetime(news_df['publishedDate'], format='ISO8601', errors='coerce').dt.tz_localize(None)
     news_df['date'] = news_df['publishedDate_dt'].dt.date
     
-    # 1. Identify the most recent article based on timestamp
+    # Identify the most recent article based on timestamp
     if not news_df.empty:
         most_recent_article_row = news_df.sort_values(by='publishedDate_dt', ascending=False).iloc[0]
         most_recent_article = {
@@ -274,7 +263,7 @@ def fetch_and_analyze_sentiment_tiingo(api_key, ticker, start_date, end_date, in
             'tickers': most_recent_article_row['tickers']
         }
         
-    # 2. Calculate daily sentiment
+    # Calculate daily sentiment
     news_df['text_to_analyze'] = news_df['title'].fillna('') + ' ' + news_df['description'].fillna('')
     
     sid = SentimentIntensityAnalyzer()
@@ -299,18 +288,18 @@ def incorporate_sentiment(price_df, sentiment_df):
         price_df['Avg_Sentiment'] = 0.0
         return price_df
 
-    # 1. Merge the DataFrames (using the Date index from price_df which is trading days)
+    # Merge the DataFrames (using the Date index from price_df which is trading days)
     # The sentiment scores are aligned by date. Missing trading days will be NaN.
     # Resetting index to use merge on 'Date' column
     df = price_df.reset_index()
     
     final_df = pd.merge(df, sentiment_df, on='Date', how='left')
     
-    # 2. Imputation Pipeline
-    # 2a. Forward Fill (FFILL): Carry the last known sentiment score forward (handles weekends/holidays).
+    # Imputation Pipeline
+    # Forward Fill (FFILL): Carry the last known sentiment score forward (handles weekends/holidays).
     final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(method='ffill')
     
-    # 2b. Mean Interpolation: Fill any remaining gaps with the mean as a baseline sentiment
+    # Mean Interpolation: Fill any remaining gaps with the mean as a baseline sentiment
     avg_sentiment = final_df['Avg_Sentiment'].mean()
     final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(avg_sentiment)
 
@@ -320,15 +309,14 @@ def incorporate_sentiment(price_df, sentiment_df):
     except Exception as e:
         st.warning(f"StandardScaler failed on Avg_Sentiment: {e}. Proceeding without scaling.")
 
-    # 2c. Final Fallback: Fill any remaining NaNs (shouldn't happen) with 0.0.
+    # Final Fallback: Fill any remaining NaNs (shouldn't happen) with 0.0.
     final_df['Avg_Sentiment'] = final_df['Avg_Sentiment'].fillna(0.0)
     
-    # 3. Set Date back as index
+    # Set Date back as index
     final_df = final_df.set_index('Date').asfreq('B').dropna()
     
     return final_df
 
-# --- Forecasting Helper Functions ---
 def get_significant_lags(series, alpha=0.05, nlags=None):
     acf_values, confint_acf = acf(series, alpha=alpha, nlags=nlags)
     pacf_values, confint_pacf = pacf(series, alpha=alpha, nlags=nlags)
@@ -368,7 +356,7 @@ def train_test_split(df, train_size=0.80):
     y_train, y_test = y_data.iloc[:split_idx], y_data.iloc[split_idx:]
     return x_data, y_data, x_train, x_test, y_train, y_test
 
-def plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name):
+def plot_actual_vs_predicted(y_train, y_test, y_pred, stock_name):
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(y_train.index, y_train, label="Training Data", color="blue", linewidth=1)
     ax.plot(y_test.index, y_test, label="Test Data (Actuals)", color="green", linewidth=1)
@@ -391,7 +379,7 @@ def save_plot_forecast(df, rolling_forecast_df, stock_name):
     ax.legend()
     return fig
 
-def rolling_forecast(df, best_model, n_periods, x_data, significant_lags_dict):
+def rolling_forecast(stock_name, df, best_model, n_periods, x_data, significant_lags_dict):
     try:
         # Use only the features that VAR can handle (numeric, non-lagged, non-date features)
         var_features = ['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']
@@ -489,6 +477,14 @@ def rolling_forecast(df, best_model, n_periods, x_data, significant_lags_dict):
             new_row_lags = create_date_features(new_row_lags)
             new_row_lags = new_row_lags.set_index('Date').asfreq('B').dropna()
             
+            # Add SPY predictions
+            if stock_name != 'SPY' and 'Close_SPY' in x_data.columns:
+                spy_forecast_df = st.session_state.get('spy_forecast', pd.DataFrame())
+                if not spy_forecast_df.empty:
+                    spy_next_close = spy_forecast_df[spy_forecast_df['Date'] == new_date]['Predicted_Close']
+                    if not spy_next_close.empty:
+                        new_row_lags['Close_SPY'] = spy_next_close.values[0]
+
             # Prepare final input for ElasticNet (must match x_data.columns exactly)
             final_input_row = new_row_lags.reindex(columns=x_data.columns, fill_value=0.0)
 
@@ -617,7 +613,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     # --- Initialization to prevent UnboundLocalError (THE FIX) ---
     target_buy_price = last_close
     target_sell_price = last_close
-    stop_loss_price = round(last_close * 0.94, 2)
+    stop_loss_price = round(last_close * 0.9, 2)
     target_return_price = last_close
     predicted_return = 0.0
     short_term_direction = 'flat'
@@ -637,8 +633,11 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
                 spy_open_direction = 'down'
             else:
                 spy_open_direction = 'flat'
-            # Store SPY predicted open direction in session state
+            # Store SPY history and predictions in session state
             st.session_state['spy_open_direction'] = spy_open_direction
+            st.session_state['spy_history'] = df[['Close']].copy()
+            st.session_state['spy_forecast'] = rolling_forecast_df.copy()
+
         else:
             # Retrieve SPY recommendation from session state
             spy_open_direction = st.session_state.get('spy_open_direction', 'avoid/sell')
@@ -710,7 +709,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         # If a dip within a certain threshold is foreseen in the 15-day horizon, avoid buying
         # Use the second-lowest value to soften responses to a single temporary dip.
         # If the second-lowest is not far below the target buy price, treat the dip as temporary and keep short-term recommendation.
-        DIP_TOLERANCE = 0.02  # 2% tolerance; tweak as needed or expose to UI
+        DIP_TOLERANCE = 0.02  # 2% tolerance; can tweak as needed or expose to UI
         if long_term_direction == 'down':
             try:
                 # If the second-lowest is significantly below the target buy price (beyond tolerance), cancel short-term buy
@@ -831,7 +830,6 @@ if st.button("🚀 Run Forecast"):
                 
                 del unique_stock_list, unique_temp_set
 
-
             # For csv/xlsx, assume tickers are in the first column
             if 'df_upload' in locals():
                 if not df_upload.empty:
@@ -924,8 +922,8 @@ if st.button("🚀 Run Forecast"):
                     st.warning(f"{stock_name} has only {len(df)} historical records. Skipping due to insufficient data.")
                     continue
 
-                # Fetch and Incorporate Sentiment Data
-                with st.spinner(f"Fetching and processing news sentiment for {stock_name}..."):
+                # Create features for modeling
+                with st.spinner(f"Creating features for {stock_name}..."):
                     # Use the earliest date in the price data as the actual start date for sentiment lookup
                     earliest_price_date = df.index.min().date() 
                     sentiment_df, most_recent_article = fetch_and_analyze_sentiment_tiingo(
@@ -936,20 +934,24 @@ if st.button("🚀 Run Forecast"):
                     )
                     df = incorporate_sentiment(df, sentiment_df)
 
-                # Create Lagged Features
-                with st.spinner(f"Creating features for {stock_name}..."):
+                    # Create lagged features
                     significant_lags_dict = {}
                     df, significant_lags_dict = create_lagged_features(df, interpolate='bfill')
 
-                    # Ensure the column exists before splitting (especially needed if Avg_Sentiment was missing or zero-filled)
+                    # Ensure the Avg_Sentiment column exists before splitting
                     if 'Avg_Sentiment' not in df.columns:
                         df['Avg_Sentiment'] = 0.0
+
+                    # Add 'SPY' close price history as a feature for all stocks except 'SPY' itself
+                    if stock_name != 'SPY':
+                        df = df.merge(st.session_state['spy_history'], left_index=True, right_index=True, how='left', suffixes=('', '_SPY'))
+                        df = df.interpolate(method='linear').bfill().ffill()
 
                     x_data, y_data, x_train, x_test, y_train, y_test = train_test_split(df)
 
                     # If x_data is empty after dropping raw features/lag creation, something went wrong
                     if x_data.empty:
-                        st.error(f"Feature creation failed for {stock_name} after lagging and cleaning. Skipping.")
+                        st.error(f"Feature creation failed for {stock_name}. Skipping.")
                         continue
 
                 # --- Model Training ---
@@ -991,20 +993,18 @@ if st.button("🚀 Run Forecast"):
                             best_model_name_for_stock = model_name
 
                         y_pred = model.predict(x_test)
-                        fig = plot_actual_vs_predicted(y_train, y_test, y_pred, model_name, stock_name)
-                        
-                        st.write(f"**Model for {stock_name}** (MAE: {mae:.4f})")
+                        fig = plot_actual_vs_predicted(y_train, y_test, y_pred, stock_name)
                         st.pyplot(fig)
                 
                 st.success(f"Best Model for {stock_name}: Mean Absolute Error (MAE): **{best_mae_for_stock:.4f}**")
 
-                # --- Forecasting ---
+                # --- Forecast ---
                 st.subheader(f"Forecast for {stock_name}")
                 with st.spinner(f"Re-training best model on full data and forecasting..."):
                     X_full, y_full = df.drop(columns=['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']), df['Close']
                     best_model_for_stock.fit(X_full, y_full)
                     
-                    rolling_predictions, rolling_df = rolling_forecast(df, best_model_for_stock, n_periods, x_data, significant_lags_dict)
+                    rolling_predictions, rolling_df = rolling_forecast(stock_name, df, best_model_for_stock, n_periods, x_data, significant_lags_dict)
                     rolling_forecast_df, summary_df = finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods, rolling_df)
                 
                 forecast_results[stock_name] = rolling_forecast_df
