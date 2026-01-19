@@ -23,6 +23,55 @@ from statsmodels.tsa.api import VAR
 from statsmodels.tsa.stattools import acf, pacf
 from sklearn.preprocessing import StandardScaler
 
+################### BEGIN CHRONOS 2 SNIPPET #####################
+import torch
+from chronos import Chronos2Pipeline
+
+time_col = 'Date'
+
+@st.cache_resource
+def load_pipeline():
+    """Loads the Chronos-2 model into memory."""
+    return Chronos2Pipeline.from_pretrained(
+        "amazon/chronos-2",
+        device_map="cpu" if not torch.cuda.is_available() else "auto",
+        dtype=torch.float32
+    )
+
+def get_forecast(pipeline, df, target_cols, horizon=45, confidence_level=0.8):
+    df = df.copy()
+    df = df.reset_index()  # Ensure 'Date' is a column for processing
+    
+    alpha = (1 - confidence_level) / 2
+    quantiles = [alpha, 0.5, 1 - alpha]
+    all_preds = []
+    
+    for target in target_cols:
+        context = torch.tensor(df[target].values, dtype=torch.float32).reshape(1, 1, -1)
+        forecast = pipeline.predict(context, prediction_length=horizon, limit_prediction_length=False)
+
+        samples = forecast[0].numpy()[0]
+        q_values = np.quantile(samples, quantiles, axis=0)
+        
+        last_date = df['Date'].max()
+        inferred_freq = pd.infer_freq(df['Date'])
+        freq_offset = pd.tseries.frequencies.to_offset(inferred_freq) if inferred_freq else (df['Date'].iloc[1] - df['Date'].iloc[0])
+
+        pred_dates = [last_date + (i + 1) * freq_offset for i in range(horizon)]
+        all_preds.append(pd.DataFrame({
+            "timestamp": pred_dates,
+            "target_name": target,
+            str(quantiles[0]): q_values[0].flatten(),
+            "0.5": q_values[1].flatten(),
+            str(quantiles[2]): q_values[2].flatten()
+        }))
+    
+    preds = pd.concat(all_preds) if all_preds else pd.DataFrame()
+    
+    return preds, quantiles
+
+################### END CHRONOS 2 SNIPPET #####################
+
 # --- Initial Setup ---
 warnings.filterwarnings("ignore")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -378,135 +427,6 @@ def save_plot_forecast(df, rolling_forecast_df, stock_name):
     ax.grid(True)
     ax.legend()
     return fig
-
-def rolling_forecast(stock_name, df, best_model, n_periods, x_data, significant_lags_dict):
-    try:
-        # Use only the features that VAR can handle (numeric, non-lagged, non-date features)
-        var_features = ['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']
-        var_features = [f for f in var_features if f in df.columns]
-
-        # --- VAR Collinearity/Singularity Fix: Remove zero-variance features ---
-        # Calculate the standard deviation for the VAR features
-        std_dev = df[var_features].std()
-        # Filter out features where standard deviation is zero (or very close to zero, e.g., < 1e-6)
-        stable_var_features = list(std_dev[std_dev > 1e-6].index)
-
-        if len(stable_var_features) < len(var_features):
-            removed_features = set(var_features) - set(stable_var_features)
-            st.warning(f"VAR Collinearity Fix: Removed zero-variance features from VAR input for stability: {', '.join(removed_features)}")
-        
-        if not stable_var_features:
-            st.error("Cannot train VAR: All features have zero variance after cleaning. Skipping forecast.")
-            return [], df # Return empty predictions if all features are constant
-
-        var_features = stable_var_features
-        
-        # Use the raw features for VAR
-        var_model = VAR(df[var_features])
-        var_fitted = var_model.fit(ic='aic')
-        
-        # Check if we have enough historical data for the VAR model
-        if len(df) < var_fitted.k_ar:
-            st.warning(
-                f"Skipping {df.columns[0]}: only {len(df)} data points available, "
-                f"but VAR model requires at least {var_fitted.k_ar}.")
-            return [], df
-        
-        rolling_df = df.copy()
-        rolling_predictions = []
-
-        most_recent_sentiment = rolling_df['Avg_Sentiment'].iloc[-1]
-
-        progress_bar = st.progress(0, text=f"Generating {n_periods}-day forecast...")
-
-        for i in range(n_periods):
-            last_date = rolling_df.index[-1]
-            new_date = last_date + pd.offsets.BusinessDay(1)
-            
-            var_input = rolling_df[var_features].iloc[-var_fitted.k_ar:]
-            
-            # Catch edge case where even after initial check, slicing fails
-            if var_input.shape[0] < var_fitted.k_ar:
-                st.warning(f"Insufficient data for step {i+1}. Forecasting halted early.")
-                break
-            
-            var_forecast = var_fitted.forecast(y=var_input.values, steps=1)[0]
-
-            # Map VAR output back to feature names (use a dictionary to store all predictions)
-            var_output_map = dict(zip(var_features, var_forecast))
-            
-            # Use var_output_map to retrieve predictions, defaulting to latest actual if a feature was removed (e.g., zero-sentiment)
-            predicted_close_var = var_output_map.get('Close', rolling_df['Close'].iloc[-1])
-            predicted_high = var_output_map.get('High', rolling_df['High'].iloc[-1])
-            predicted_low = var_output_map.get('Low', rolling_df['Low'].iloc[-1])
-            predicted_open = var_output_map.get('Open', rolling_df['Open'].iloc[-1])
-            predicted_volume = var_output_map.get('Volume', rolling_df['Volume'].iloc[-1])
-            predicted_avg_sentiment = var_output_map.get('Avg_Sentiment', rolling_df['Avg_Sentiment'].iloc[-1])
-
-            next_period_raw = pd.DataFrame({
-                'Close': [max(predicted_close_var, 0.01)], 
-                'High': [max(predicted_high, 0.01)],
-                'Low': [max(predicted_low, 0.01)], 
-                'Open': [max(predicted_open, 0.01)],
-                'Volume': [max(predicted_volume, 0)],
-                'Avg_Sentiment': [predicted_avg_sentiment] if not st.session_state['carry_forward_news_sentiment'] else [most_recent_sentiment]
-                }, index=[new_date])
-
-            latest_data = pd.concat([rolling_df[['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']], next_period_raw])
-
-            new_row_features = latest_data.copy()
-
-            # Create lagged features for the new row based on the augmented data
-            all_lags_created = {}
-            for col in ['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']:
-                if col not in significant_lags_dict: continue # Skip if no lags found
-                
-                # Re-calculate MA/Lags for the new row using the latest data (including VAR forecast)
-                for lag in significant_lags_dict[col]['pacf']:
-                    if lag > 0:
-                        all_lags_created[f'{col}_lag{lag}'] = new_row_features[col].shift(lag).iloc[-1]
-                for ma_lag in significant_lags_dict[col]['acf']:
-                    if ma_lag > 0:
-                        all_lags_created[f'{col}_ma_lag{ma_lag}'] = new_row_features[col].shift(1).rolling(window=ma_lag).mean().iloc[-1]
-            
-            # Convert created lags to a DataFrame row
-            new_row_lags = pd.DataFrame([all_lags_created], index=[new_date])
-            
-            # Create Date Features for the new row
-            new_row_lags = new_row_lags.reset_index().rename(columns={'index': 'Date'})
-            new_row_lags = create_date_features(new_row_lags)
-            new_row_lags = new_row_lags.set_index('Date').asfreq('B').dropna()
-            
-            # Add SPY predictions
-            if stock_name != 'SPY' and 'Close_SPY' in x_data.columns:
-                spy_forecast_df = st.session_state.get('spy_forecast', pd.DataFrame())
-                if not spy_forecast_df.empty:
-                    spy_next_close = spy_forecast_df[spy_forecast_df['Date'] == new_date]['Predicted_Close']
-                    if not spy_next_close.empty:
-                        new_row_lags['Close_SPY'] = spy_next_close.values[0]
-
-            # Prepare final input for ElasticNet (must match x_data.columns exactly)
-            final_input_row = new_row_lags.reindex(columns=x_data.columns, fill_value=0.0)
-
-            predicted_value = max(best_model.predict(final_input_row)[0], 0.01)
-            rolling_predictions.append(predicted_value)
-
-            # 6. Append the final prediction to rolling_df for the next iteration
-            final_row_for_next_iteration = next_period_raw.copy()
-            final_row_for_next_iteration['Close'] = predicted_value # Use the more accurate ElasticNet prediction for 'Close'
-            
-            # Append the full raw feature set for the next VAR step
-            rolling_df = pd.concat([rolling_df, final_row_for_next_iteration])
-
-            if i % 5 == 0 or i == n_periods -1:
-                progress_bar.progress((i + 1) / n_periods, text=f"Day {i+1}/{n_periods} forecasted...")
-        
-        progress_bar.empty()
-        return rolling_predictions, rolling_df
-
-    except Exception as e:
-        st.error(f"An error occurred during rolling forecast: {e}")
-        return [], df
 
 def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods, rolling_df=None, spy_open_direction=None):
     """
@@ -947,64 +867,21 @@ if st.button("🚀 Run Forecast"):
                         df = df.merge(st.session_state['spy_history'], left_index=True, right_index=True, how='left', suffixes=('', '_SPY'))
                         df = df.interpolate(method='linear').bfill().ffill()
 
-                    x_data, y_data, x_train, x_test, y_train, y_test = train_test_split(df)
-
-                    # If x_data is empty after dropping raw features/lag creation, something went wrong
-                    if x_data.empty:
+                    # If df is empty after dropping raw features/lag creation, something went wrong
+                    if df.empty:
                         st.error(f"Feature creation failed for {stock_name}. Skipping.")
                         continue
 
-                # --- Model Training ---
-                st.subheader(f"Model Training & Optimization for {stock_name}")
-                model_scores = {}
-                
-                # Objective functions for Optuna
-                def objective_elastic_net(trial):
-                    alpha = trial.suggest_float('alpha', 1e-6, 1e-1, log=True)
-                    l1_ratio = trial.suggest_float('l1_ratio', 0, 1)
-                    model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio)
-                    model.fit(x_train, y_train)
-                    return mean_absolute_error(y_test, model.predict(x_test))
-
-                studies = {'ElasticNet': optuna.create_study(direction='minimize')}
-                objectives = {'ElasticNet': objective_elastic_net}
-
-                best_model_for_stock = None
-                best_mae_for_stock = float('inf')
-                best_model_name_for_stock = ""
-                
-                for model_name, study in studies.items():
-                    with st.spinner(f"Optimizing model..."):
-                        pruner = optuna.pruners.MedianPruner()
-                        study.optimize(objectives[model_name], n_trials=max_trials)
-                        
-                        best_params = study.best_params
-                        
-                        ### THIS WILL NEED TO BE CHANGED IF ADDITIONAL MODELS ARE ADDED IN THE FUTURE ###
-                        model = ElasticNet(**best_params)
-
-                        model.fit(x_train, y_train)
-                        mae = study.best_value
-                        model_scores[model_name] = (model, mae)
-
-                        if mae < best_mae_for_stock:
-                            best_mae_for_stock = mae
-                            best_model_for_stock = model
-                            best_model_name_for_stock = model_name
-
-                        y_pred = model.predict(x_test)
-                        fig = plot_actual_vs_predicted(y_train, y_test, y_pred, stock_name)
-                        st.pyplot(fig)
-                
-                st.success(f"Best Model for {stock_name}: Mean Absolute Error (MAE): **{best_mae_for_stock:.4f}**")
-
                 # --- Forecast ---
                 st.subheader(f"Forecast for {stock_name}")
-                with st.spinner(f"Re-training best model on full data and forecasting..."):
-                    X_full, y_full = df.drop(columns=['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']), df['Close']
-                    best_model_for_stock.fit(X_full, y_full)
-                    
-                    rolling_predictions, rolling_df = rolling_forecast(stock_name, df, best_model_for_stock, n_periods, x_data, significant_lags_dict)
+                with st.spinner(f"Running forecast..."):
+                    pipeline = load_pipeline()
+
+                    pred_df, quantiles = get_forecast(pipeline, df, target_cols=df.columns, horizon=n_periods)
+                    pred_df = pred_df.reset_index().rename(columns={'timestamp': 'Date'})[['Date', 'target_name', '0.5']]
+                    pred_df = pred_df.pivot(index='Date', columns='target_name', values='0.5')
+
+                    rolling_predictions, rolling_df = pred_df['Close'].tolist(), pred_df
                     rolling_forecast_df, summary_df = finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods, rolling_df)
                 
                 forecast_results[stock_name] = rolling_forecast_df
