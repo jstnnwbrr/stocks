@@ -17,10 +17,6 @@ import nltk
 from datetime import timedelta
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from tiingo import TiingoClient
-from sklearn.linear_model import ElasticNet
-from sklearn.metrics import mean_absolute_error
-from statsmodels.tsa.api import VAR
-from statsmodels.tsa.stattools import acf, pacf
 from sklearn.preprocessing import StandardScaler
 
 ################### BEGIN CHRONOS 2 SNIPPET #####################
@@ -39,35 +35,66 @@ def load_pipeline():
     )
 
 def get_forecast(pipeline, df, target_cols, horizon=45, confidence_level=0.8):
+    """
+    Generates forecasts using Chronos-2 via the standard predict() API.
+    Handles data frequency alignment and missing values (holidays).
+    """
     df = df.copy()
+    
+    # 0. Pre-process to ensure regular frequency (handle holidays/gaps)
+    if 'Date' in df.columns:
+        df = df.set_index('Date')
+    
+    # Force Business Day frequency and fill gaps
+    # Chronos performs best on continuous series without NaN gaps in the tensor
+    df = df.asfreq('B')
+    df = df.ffill() 
+    df = df.bfill()
+    
     df = df.reset_index()  # Ensure 'Date' is a column for processing
     
     alpha = (1 - confidence_level) / 2
     quantiles = [alpha, 0.5, 1 - alpha]
     all_preds = []
     
+    # 1. Generate Future Dates
+    last_date = df['Date'].max()
+    freq_offset = pd.tseries.offsets.BusinessDay(1)
+    pred_dates = [last_date + (i + 1) * freq_offset for i in range(horizon)]
+    
+    # 2. Iterate over specific targets and forecast
     for target in target_cols:
-        context = torch.tensor(df[target].values, dtype=torch.float32).reshape(1, 1, -1)
-        forecast = pipeline.predict(context, prediction_length=horizon, limit_prediction_length=False)
+        if target not in df.columns:
+            continue
+            
+        try:
+            # Create context tensor: Shape [1, 1, sequence_length]
+            # We treat each target as a univariate series
+            context = torch.tensor(df[target].values, dtype=torch.float32).reshape(1, 1, -1)
+            
+            # Predict
+            forecast = pipeline.predict(
+                context, 
+                prediction_length=horizon, 
+                limit_prediction_length=False
+            )
 
-        samples = forecast[0].numpy()[0]
-        q_values = np.quantile(samples, quantiles, axis=0)
-        
-        last_date = df['Date'].max()
-        inferred_freq = pd.infer_freq(df['Date'])
-        freq_offset = pd.tseries.frequencies.to_offset(inferred_freq) if inferred_freq else (df['Date'].iloc[1] - df['Date'].iloc[0])
-
-        pred_dates = [last_date + (i + 1) * freq_offset for i in range(horizon)]
-        all_preds.append(pd.DataFrame({
-            "timestamp": pred_dates,
-            "target_name": target,
-            str(quantiles[0]): q_values[0].flatten(),
-            "0.5": q_values[1].flatten(),
-            str(quantiles[2]): q_values[2].flatten()
-        }))
+            # Extract samples and quantiles
+            samples = forecast[0].numpy()[0] # Shape [num_samples, horizon]
+            q_values = np.quantile(samples, quantiles, axis=0)
+            
+            all_preds.append(pd.DataFrame({
+                "timestamp": pred_dates,
+                "target_name": target,
+                str(quantiles[0]): q_values[0].flatten(),
+                "0.5": q_values[1].flatten(),
+                str(quantiles[2]): q_values[2].flatten()
+            }))
+        except Exception as e:
+            st.warning(f"Forecast failed for {target}: {e}")
+            continue
     
     preds = pd.concat(all_preds) if all_preds else pd.DataFrame()
-    
     return preds, quantiles
 
 ################### END CHRONOS 2 SNIPPET #####################
@@ -101,7 +128,8 @@ def throttle_request():
         requests_made = 1
         start_time = datetime.datetime.now()
 
-def create_date_features(df):
+def cleanup_date_features(df):
+    df = df.copy()
     # Ensure Date index is clean and timezone-naive before feature creation
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
@@ -109,18 +137,7 @@ def create_date_features(df):
         # If 'Date' is the index, reset it temporarily.
         df = df.reset_index(names=['Date'])
     
-    temp_df = df.copy() # Use a copy to avoid SettingWithCopyWarning
-    
-    temp_df['month'] = temp_df['Date'].dt.month
-    temp_df['year'] = temp_df['Date'].dt.year
-    temp_df['day'] = temp_df['Date'].dt.day
-    temp_df['day_of_week'] = temp_df['Date'].dt.day_of_week
-    temp_df['is_month_end'] = temp_df['Date'].dt.is_month_end.astype('int64')
-    temp_df['is_month_start'] = temp_df['Date'].dt.is_month_start.astype('int64')
-    temp_df['is_quarter_end'] = temp_df['Date'].dt.is_quarter_end.astype('int64')
-    temp_df['is_quarter_start'] = temp_df['Date'].dt.is_quarter_start.astype('int64')
-    
-    return temp_df
+    return df
 
 # --- Function to parse and clean ticker inputs ---
 def parse_and_clean_tickers(input_data):
@@ -212,7 +229,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
         # Ensure the 'Date' column is converted to timezone-naive datetime objects
         df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
         
-        df = create_date_features(df)
+        df = cleanup_date_features(df)
         df = df.set_index('Date').asfreq('B').dropna()
         return df
     
@@ -223,7 +240,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
             df = yf.download(stock_name, start='2023-01-01', end=end_date, progress=False)
             if not df.empty:
                 df = df.reset_index().rename(columns={'index': 'Date'}) # Ensure 'Date' column exists
-                df = create_date_features(df)
+                df = cleanup_date_features(df)
                 df = df.set_index('Date').asfreq('B').dropna()
                 return df
             else:
@@ -366,57 +383,6 @@ def incorporate_sentiment(price_df, sentiment_df):
     
     return final_df
 
-def get_significant_lags(series, alpha=0.05, nlags=None):
-    acf_values, confint_acf = acf(series, alpha=alpha, nlags=nlags)
-    pacf_values, confint_pacf = pacf(series, alpha=alpha, nlags=nlags)
-    significant_acf_lags = np.where(np.abs(acf_values) > confint_acf[:, 1] - acf_values)[0]
-    significant_pacf_lags = np.where(np.abs(pacf_values) > confint_pacf[:, 1] - pacf_values)[0]
-    return significant_acf_lags, significant_pacf_lags
-
-def create_lagged_features(df, interpolate='bfill'):
-    significant_lags_dict = {}
-    features_to_lag = ['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']
-
-    for col in features_to_lag:
-        # Ensure the column exists before processing
-        if col not in df.columns:
-            continue 
-
-        significant_acf, significant_pacf = get_significant_lags(df[col])
-        significant_lags_dict[col] = {'acf': significant_acf, 'pacf': significant_pacf}
-
-        for ma_lag in significant_acf:
-            if ma_lag > 0:
-                df[f'{col}_ma_lag{ma_lag}'] = df[col].shift(1).rolling(window=ma_lag).mean()
-        for lag in significant_pacf:
-            if lag > 0:
-                df[f'{col}_lag{lag}'] = df[col].shift(lag)
-
-    df.dropna(inplace=True)
-    if df.isnull().values.any():
-        df = df.interpolate(method=interpolate)
-        
-    return df, significant_lags_dict
-
-def train_test_split(df, train_size=0.80):
-    x_data, y_data = df.drop(columns=['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']), df['Close']
-    split_idx = int(len(x_data) * train_size)
-    x_train, x_test = x_data.iloc[:split_idx], x_data.iloc[split_idx:]
-    y_train, y_test = y_data.iloc[:split_idx], y_data.iloc[split_idx:]
-    return x_data, y_data, x_train, x_test, y_train, y_test
-
-def plot_actual_vs_predicted(y_train, y_test, y_pred, stock_name):
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(y_train.index, y_train, label="Training Data", color="blue", linewidth=1)
-    ax.plot(y_test.index, y_test, label="Test Data (Actuals)", color="green", linewidth=1)
-    ax.plot(y_test.index, y_pred, label="Predicted Test Data", color="red", linewidth=1)
-    ax.legend()
-    ax.set_title(f"{stock_name} - Historical Actuals vs Predicted")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Values")
-    ax.grid(True)
-    return fig
-
 def save_plot_forecast(df, rolling_forecast_df, stock_name):
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(df.index[-180:], df['Close'][-180:], label="Actual Close", color='blue')
@@ -530,7 +496,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         predicted_next_low = min(predicted_next_high, predicted_next_open, predicted_next_low)
         predicted_next_high = max(predicted_next_high, predicted_next_open, predicted_next_low)
 
-    # --- Initialization to prevent UnboundLocalError (THE FIX) ---
+    # --- Initialization to prevent UnboundLocalError ---
     target_buy_price = last_close
     target_sell_price = last_close
     stop_loss_price = round(last_close * 0.9, 2)
@@ -854,10 +820,6 @@ if st.button("🚀 Run Forecast"):
                     )
                     df = incorporate_sentiment(df, sentiment_df)
 
-                    # Create lagged features
-                    significant_lags_dict = {}
-                    df, significant_lags_dict = create_lagged_features(df, interpolate='bfill')
-
                     # Ensure the Avg_Sentiment column exists before splitting
                     if 'Avg_Sentiment' not in df.columns:
                         df['Avg_Sentiment'] = 0.0
@@ -877,7 +839,12 @@ if st.button("🚀 Run Forecast"):
                 with st.spinner(f"Running forecast..."):
                     pipeline = load_pipeline()
 
-                    pred_df, quantiles = get_forecast(pipeline, df, target_cols=df.columns, horizon=n_periods)
+                    # Explicitly selecting only the core columns and potential SPY merge column
+                    target_cols = ['Close', 'Open', 'High', 'Low', 'Volume', 'Avg_Sentiment']
+                    if 'Close_SPY' in df.columns:
+                        target_cols.append('Close_SPY')
+
+                    pred_df, quantiles = get_forecast(pipeline, df, target_cols=target_cols, horizon=n_periods)
                     pred_df = pred_df.reset_index().rename(columns={'timestamp': 'Date'})[['Date', 'target_name', '0.5']]
                     pred_df = pred_df.pivot(index='Date', columns='target_name', values='0.5')
 
