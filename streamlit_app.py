@@ -13,16 +13,15 @@ import yfinance as yf
 import io
 import re
 import nltk
+import torch
 
+from chronos import Chronos2Pipeline
 from datetime import timedelta
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
-from tiingo import TiingoClient
 from sklearn.preprocessing import StandardScaler
+from tiingo import TiingoClient
 
 ################### BEGIN CHRONOS 2 SNIPPET #####################
-import torch
-from chronos import Chronos2Pipeline
-
 time_col = 'Date'
 
 @st.cache_resource
@@ -237,7 +236,7 @@ def get_data(stock_name, end_date, tiingo_api_key):
         st.warning(f"Tiingo failed for {stock_name}: {e}. Trying yfinance as backup.")
         try:
             st.info(f"[{stock_name}] Attempting to source data from yfinance...")
-            df = yf.download(stock_name, start='2023-01-01', end=end_date, progress=False)
+            df = yf.download(stock_name, start='2022-01-01', end=end_date, progress=False)
             if not df.empty:
                 df = df.reset_index().rename(columns={'index': 'Date'}) # Ensure 'Date' column exists
                 df = cleanup_date_features(df)
@@ -383,10 +382,10 @@ def incorporate_sentiment(price_df, sentiment_df):
     
     return final_df
 
-def save_plot_forecast(df, rolling_forecast_df, stock_name):
+def plot_forecast(df, rolling_forecast_df, stock_name):
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(df.index[-180:], df['Close'][-180:], label="Actual Close", color='blue')
-    ax.plot(rolling_forecast_df['Date'], rolling_forecast_df['Predicted_Close'], label="Rolling Forecast", color='red')
+    ax.plot(rolling_forecast_df['Date'], rolling_forecast_df['Predicted_Close'], label="Forecast", color='red')
     ax.set_title(f"Predicted Close Prices for {stock_name} (as of {datetime.date.today()})")
     ax.set_xlabel("Date")
     ax.set_ylabel("Stock Price")
@@ -395,14 +394,6 @@ def save_plot_forecast(df, rolling_forecast_df, stock_name):
     return fig
 
 def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods, rolling_df=None, spy_open_direction=None):
-    """
-    Finalizes the forecast by creating the forecast DataFrame, calculating
-    performance metrics (MAE), and preparing the summary DataFrame.
-    
-    This version includes a check for an empty rolling_predictions array
-    to gracefully handle cases where the preceding prediction step (e.g., 
-    due to missing sentiment data) failed.
-    """
     # Use a default fallback of the last known close price
     last_close = df['Close'].iloc[-1] if not df.empty else 1.0 
 
@@ -677,11 +668,6 @@ with st.sidebar:
     
     st.subheader("Forecasting Parameters")
     n_periods = st.slider("Forecast Horizon (days)", 10, 100, 45)
-    
-    st.subheader("Model Training Parameters")
-    st.session_state['carry_forward_news_sentiment'] = st.checkbox("Carry forward most recent news sentiment", value=True)
-    max_trials = st.slider("Max Optimization Trials", 10, 100, 20)
-    patience = st.slider("Optimization Patience (early stopping)", 5, 20, 10)
     save_forecasts_to_excel = st.checkbox("Save forecasts per ticker to Excel", value=False)
 
 # --- Main App Logic ---
@@ -854,7 +840,7 @@ if st.button("🚀 Run Forecast"):
                 forecast_results[stock_name] = rolling_forecast_df
                 summary_results.append(summary_df)
 
-                fig_forecast = save_plot_forecast(df, rolling_forecast_df, stock_name)
+                fig_forecast = plot_forecast(df, rolling_forecast_df, stock_name)
                 st.pyplot(fig_forecast)
 
                 # Display Most Recent News Article
