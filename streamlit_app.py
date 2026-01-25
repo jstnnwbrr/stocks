@@ -149,6 +149,7 @@ def create_date_features(df):
     else:
         # If 'Date' is the index, reset it temporarily.
         df = df.reset_index(names=['Date'])
+        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
     
     temp_df = df.copy() # Use a copy to avoid SettingWithCopyWarning
     
@@ -529,7 +530,6 @@ def rolling_forecast(stock_name, df, best_model, n_periods, x_data, significant_
             predicted_low = var_output_map.get('Low', rolling_df['Low'].iloc[-1])
             predicted_open = var_output_map.get('Open', rolling_df['Open'].iloc[-1])
             predicted_volume = var_output_map.get('Volume', rolling_df['Volume'].iloc[-1])
-            predicted_avg_sentiment = var_output_map.get('Avg_Sentiment', rolling_df['Avg_Sentiment'].iloc[-1])
 
             next_period_raw = pd.DataFrame({
                 'Close': [max(predicted_close_var, 0.01)], 
@@ -564,26 +564,28 @@ def rolling_forecast(stock_name, df, best_model, n_periods, x_data, significant_
             new_row_lags = new_row_lags.reset_index().rename(columns={'index': 'Date'})
             new_row_lags = create_date_features(new_row_lags)
             new_row_lags = new_row_lags.set_index('Date').asfreq('B').dropna()
-            
+
             # Add SPY predictions
             if stock_name != 'SPY' and 'Close_SPY' in x_data.columns:
                 spy_forecast_df = st.session_state.get('spy_forecast', pd.DataFrame())
                 if not spy_forecast_df.empty:
-                    spy_next_close = spy_forecast_df[spy_forecast_df['Date'] == new_date]['Predicted_Close']
+                    spy_next_close = spy_forecast_df.loc[spy_forecast_df['Date'] == new_date]['Predicted_Close']
                     if not spy_next_close.empty:
                         new_row_lags['Close_SPY'] = spy_next_close.values[0]
 
             # Prepare final input for ElasticNet (must match x_data.columns exactly)
             final_input_row = new_row_lags.reindex(columns=x_data.columns, fill_value=0.0)
 
+            # Make prediction
             predicted_value = max(best_model.predict(final_input_row)[0], 0.01)
             rolling_predictions.append(predicted_value)
 
             # 6. Append the final prediction to rolling_df for the next iteration
             final_row_for_next_iteration = next_period_raw.copy()
+            
             final_row_for_next_iteration['Close'] = predicted_value # Use the more accurate ElasticNet prediction for 'Close'
             
-            # Append the full raw feature set for the next VAR step
+            # Append the full raw feature set for the next step
             rolling_df = pd.concat([rolling_df, final_row_for_next_iteration])
 
             if i % 5 == 0 or i == n_periods -1:
@@ -614,32 +616,24 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         # Initialize all target variables to safe defaults (0 or N/A) for the summary DataFrame
         nan_summary_data = {
             'ticker_symbol': [stock_name], 
-            'short_term_direction': ['N/A'], 
-            'short_term_recommendation': ['N/A'],
+            'recommendation': ['N/A'],
             'target_buy_price': [np.nan],
             'target_sell_price': [np.nan],
-            'stop_loss_price': [np.nan],
-            'short_term_predicted_return_%': [np.nan],
             'predicted_open': [np.nan],
             'predicted_high': [np.nan],
             'predicted_low': [np.nan],
-            'predicted_sentiment': [np.nan],
-            'long_term_direction': ['N/A'],
-            'long_term_recommendation': ['N/A'],
-            'long_term_sell_price': [np.nan],
-            'long_term_predicted_return_%': [np.nan],
-            'predicted_high_15_day': [np.nan],
-            'predicted_low_15_day': [np.nan], 
-            'predicted_second_lowest_15_day': [np.nan],
-            'predicted_avg_15_day': [np.nan],
-            'predicted_volatility_%': [np.nan]
+            'predicted_sentiment': [np.nan]
         }
         empty_summary_df = pd.DataFrame(nan_summary_data)
         return empty_forecast_df, empty_summary_df
     
     # If predictions exist, proceed with main calculations
+    # IMPORTANT: Generate the date range with the actual length of rolling_predictions,
+    # not n_periods, because the forecast loop may terminate early if insufficient data.
+    actual_forecast_length = len(rolling_predictions)
+    
     rolling_forecast_df = pd.DataFrame({
-        'Date': pd.date_range(start=df.index[-1], periods=n_periods + 1, freq='B')[1:],
+        'Date': pd.date_range(start=df.index[-1], periods=actual_forecast_length + 1, freq='B')[1:],
         'Predicted_Close': rolling_predictions})
 
     horizon_df = rolling_forecast_df.head(15)
@@ -811,28 +805,24 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
             short_term_recommendation = 'avoid/sell'
             long_term_recommendation = 'avoid/sell'
 
+        # Final logic
+        if short_term_recommendation == 'avoid/sell' or long_term_recommendation == 'avoid/sell':
+            recommendation = 'avoid/sell'
+        elif short_term_recommendation == 'buy' and long_term_recommendation == 'buy':
+            recommendation = 'buy'
+        else:
+            recommendation = 'avoid/sell'
+
     # Create summary_df after all calculations
     summary_df = pd.DataFrame({
         'ticker_symbol': [stock_name], 
-        'short_term_direction': [short_term_direction], 
-        'short_term_recommendation': [short_term_recommendation],
+        'recommendation': [recommendation],
         'target_buy_price': [target_buy_price],
         'target_sell_price': [target_sell_price],
-        'stop_loss_price': [stop_loss_price],
-        'short_term_predicted_return_%': [predicted_return * 100],
         'predicted_open': [predicted_next_open],
         'predicted_high': [predicted_next_high],
         'predicted_low': [predicted_next_low],
-        'predicted_sentiment': [predicted_next_avg_sentiment],
-        'long_term_direction': [long_term_direction],
-        'long_term_recommendation': [long_term_recommendation],
-        'long_term_sell_price': [long_term_sell_price],
-        'long_term_predicted_return_%': [long_term_predicted_return * 100],
-        'predicted_high_15_day': [predicted_high_15_days],
-        'predicted_low_15_day': [predicted_low_15_days], 
-        'predicted_second_lowest_15_day': [predicted_second_lowest_15_days],
-        'predicted_avg_15_day': [predicted_avg_15_days],
-        'predicted_volatility_%': [predicted_volatility_15_days * 100]})
+        'predicted_sentiment': [predicted_next_avg_sentiment]})
 
     return rolling_forecast_df, summary_df
 
@@ -1028,7 +1018,7 @@ if st.button("🚀 Run Forecast"):
                 st.subheader(f"Forecast for {stock_name}")
                 with st.spinner(f"Running forecast..."):
                     
-                    ###### Sub-process for chronos model ######
+                    ###### Sub-process for Chronos-2 model ######
                     pipeline = load_pipeline()
                     # Explicitly selecting only the core columns and potential SPY merge column
                     target_cols = ['Close', 'Open', 'High', 'Low', 'Volume', 'Avg_Sentiment']
@@ -1038,23 +1028,29 @@ if st.button("🚀 Run Forecast"):
                     pred_df_c = pred_df_c.reset_index().rename(columns={'timestamp': 'Date'})[['Date', 'target_name', '0.5']]
                     pred_df_c = pred_df_c.pivot(index='Date', columns='target_name', values='0.5')
                     rolling_predictions_c, rolling_df_c = pred_df_c['Close'].tolist(), pred_df_c
-                    rolling_forecast_df_c, summary_df_c = finalize_forecast_and_metrics(stock_name, rolling_predictions_c, df_c, n_periods, rolling_df_c)
                     
-                    ###### Sub-process for elastic net model ######
-                    X_full, y_full = df_e.drop(columns=['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']), df_e['Close']
+                    ###### Sub-process for Elastic Net model ######
+                    X_full, y_full = df_e.drop(columns=['Close', 'Open', 'High', 'Low', 'Volume', 'Avg_Sentiment']), df_e['Close']
                     best_model_for_stock.fit(X_full, y_full)
                     rolling_predictions_e, rolling_df_e = rolling_forecast(stock_name, df_e, best_model_for_stock, n_periods, x_data, significant_lags_dict)
-                    rolling_forecast_df_e, summary_df_e = finalize_forecast_and_metrics(stock_name, rolling_predictions_e, df_e, n_periods, rolling_df_e)
+                    
+                    # --- Consolidate Results ---
+                    consolidated_rolling_df = round((rolling_df_c + rolling_df_e.iloc[-len(rolling_df_c):])/2, 2)
+                    consolidated_rolling_df = consolidated_rolling_df[['Close', 'Open', 'High', 'Low', 'Volume', 'Avg_Sentiment']]
+                    consolidated_predictions = consolidated_rolling_df['Close'].tolist()
 
-                forecast_results[stock_name] = rolling_forecast_df_c
-                summary_results.append(summary_df_c)
+                    rolling_forecast_df_consolidated, summary_df_consolidated = finalize_forecast_and_metrics(
+                        stock_name, 
+                        consolidated_predictions, 
+                        df_c, 
+                        n_periods, 
+                        consolidated_rolling_df)
 
-                st.write("Chronos-2")
-                fig_forecast_c = plot_forecast(df_c, rolling_forecast_df_c, stock_name)
-                st.pyplot(fig_forecast_c)
-                st.write("Elastic Net")
-                fig_forecast_e = plot_forecast(df_e, rolling_forecast_df_e, stock_name)
-                st.pyplot(fig_forecast_e)
+                forecast_results[stock_name] = rolling_forecast_df_consolidated
+                summary_results.append(summary_df_consolidated)
+
+                fig_forecast = plot_forecast(df_c, rolling_forecast_df_consolidated, stock_name)
+                st.pyplot(fig_forecast)
 
                 # Display Most Recent News Article
                 if most_recent_article:
@@ -1065,15 +1061,14 @@ if st.button("🚀 Run Forecast"):
                     st.caption(most_recent_article['description'])
                     st.markdown("---")
 
-                st.dataframe(summary_df_c, use_container_width=True)
-                st.dataframe(summary_df_e, use_container_width=True)
+                st.dataframe(summary_df_consolidated, use_container_width=True)
 
                 sheet_name = re.sub(r'[\[\]\*:\?/\\ ]', '_', stock_name)[:31]
                 
                 if save_forecasts_to_excel:
-                    rolling_forecast_df_c.to_excel(writer, sheet_name=sheet_name, index=False)
+                    rolling_forecast_df_consolidated.to_excel(writer, sheet_name=sheet_name, index=False)
                     worksheet = writer.sheets[sheet_name]
-                    autofit_columns(rolling_forecast_df_c, worksheet)
+                    autofit_columns(rolling_forecast_df_consolidated, worksheet)
                 
                 st.markdown("---")
                 time.sleep(1) # brief pause to reduce CPU spikes
