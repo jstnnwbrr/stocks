@@ -459,7 +459,7 @@ def train_test_split(df, train_size=0.80):
 
 def plot_forecast(df, rolling_forecast_df, stock_name):
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(df.index[-180:], df['Close'][-180:], label="Actual Close", color='blue')
+    ax.plot(df.index[-180:], df['Close'][-180:], label="Historical Close", color='blue')
     ax.plot(rolling_forecast_df['Date'], rolling_forecast_df['Predicted_Close'], label="Forecast", color='red')
     ax.set_title(f"Predicted Close Prices for {stock_name} (as of {datetime.date.today()})")
     ax.set_xlabel("Date")
