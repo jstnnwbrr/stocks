@@ -11,3 +11,5 @@ matplotlib
 xlsxwriter
 nltk
 tiingo
+torch
+chronos-forecasting
