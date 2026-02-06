@@ -530,6 +530,7 @@ def rolling_forecast(stock_name, df, best_model, n_periods, x_data, significant_
             predicted_low = var_output_map.get('Low', rolling_df['Low'].iloc[-1])
             predicted_open = var_output_map.get('Open', rolling_df['Open'].iloc[-1])
             predicted_volume = var_output_map.get('Volume', rolling_df['Volume'].iloc[-1])
+            predicted_avg_sentiment = var_output_map.get('Avg_Sentiment', most_recent_sentiment)
 
             next_period_raw = pd.DataFrame({
                 'Close': [max(predicted_close_var, 0.01)], 
@@ -537,7 +538,7 @@ def rolling_forecast(stock_name, df, best_model, n_periods, x_data, significant_
                 'Low': [max(predicted_low, 0.01)], 
                 'Open': [max(predicted_open, 0.01)],
                 'Volume': [max(predicted_volume, 0)],
-                'Avg_Sentiment': [most_recent_sentiment]
+                'Avg_Sentiment': [predicted_avg_sentiment]
                 }, index=[new_date])
 
             latest_data = pd.concat([rolling_df[['Close', 'High', 'Low', 'Open', 'Volume', 'Avg_Sentiment']], next_period_raw])
