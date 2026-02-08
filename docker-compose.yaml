@@ -1,0 +1,16 @@
+services:
+  stock-forecast-app:
+    build: .
+    container_name: stocks_container
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - CUDA_VISIBLE_DEVICES=-1 # Force CPU mode for Torch unless you have a GPU
+
+volumes:
+  hf_cache: # This persists the Amazon Chronos model weights

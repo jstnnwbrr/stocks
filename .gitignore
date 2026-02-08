@@ -1,0 +1,31 @@
+# --- Secrets & Config ---
+*.env
+secrets.dev.yaml
+
+# --- Python & Environments ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# --- Local Data & Cache ---
+# Ignore the model weights if you download them locally outside Docker
+.cache/
+# Ignore forecasting outputs so you don't clutter git with Excel files
+*.xlsx
+*.csv
+
+# --- Editors & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Docker ---
+# Usually, we keep Dockerfiles in Git, but ignore local data volumes
+/hf_cache/

@@ -1,0 +1,10 @@
+**/.DS_Store
+**/__pycache__
+**/.venv
+**/.git
+**/.env
+**/docker-compose*
+**/Dockerfile*
+**/.vscode
+LICENSE
+README.md

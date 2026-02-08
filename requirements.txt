@@ -2,7 +2,7 @@ streamlit
 pandas
 numpy
 scikit-learn
-scipy==1.12.0
+scipy
 statsmodels
 optuna
 yfinance
