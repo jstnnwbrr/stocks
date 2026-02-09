@@ -1062,7 +1062,7 @@ if st.button("🚀 Run Forecast"):
                     st.caption(most_recent_article['description'])
                     st.markdown("---")
 
-                st.dataframe(summary_df_consolidated, use_container_width=True)
+                st.dataframe(summary_df_consolidated, width='stretch')
 
                 sheet_name = re.sub(r'[\[\]\*:\?/\\ ]', '_', stock_name)[:31]
                 
@@ -1078,7 +1078,7 @@ if st.button("🚀 Run Forecast"):
             if summary_results:
                 st.header("📊 Consolidated Summary")
                 combined_summary = pd.concat(summary_results, ignore_index=True)
-                st.dataframe(combined_summary, use_container_width=True)
+                st.dataframe(combined_summary, width='stretch')
 
                 combined_summary.to_excel(writer, sheet_name='Summary_Stats', index=False)
                 summary_worksheet = writer.sheets["Summary_Stats"]
