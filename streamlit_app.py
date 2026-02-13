@@ -457,10 +457,15 @@ def train_test_split(df, train_size=0.80):
     y_train, y_test = y_data.iloc[:split_idx], y_data.iloc[split_idx:]
     return x_data, y_data, x_train, x_test, y_train, y_test
 
-def plot_forecast(df, rolling_forecast_df, stock_name):
+def plot_forecast(df, consolidated_rolling_forecast_df, chronos_predictions_df=None, elastic_net_predictions_df=None, stock_name=None):
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(df.index[-180:], df['Close'][-180:], label="Historical Close", color='blue')
-    ax.plot(rolling_forecast_df['Date'], rolling_forecast_df['Predicted_Close'], label="Forecast", color='red')
+    ax.plot(df.index[-180:], df['Close'][-180:], label="Historical Close", color='blue', linewidth=2)
+    ax.plot(consolidated_rolling_forecast_df['Date'], consolidated_rolling_forecast_df['Predicted_Close'], label="Ensemble Average Forecast", color='midnightblue', linewidth=2)
+    if chronos_predictions_df is not None:
+        chronos_predictions_df.reset_index(inplace=True)
+        ax.plot(chronos_predictions_df['Date'], chronos_predictions_df['Close'], label="Chronos Forecast", color='skyblue', linestyle='--', linewidth=1)
+    if elastic_net_predictions_df is not None:
+        ax.plot(elastic_net_predictions_df.index[-len(consolidated_rolling_forecast_df):], elastic_net_predictions_df['Close'].iloc[-len(consolidated_rolling_forecast_df):], label="Elastic Net Forecast", color='orange', linestyle='--', linewidth=1)
     ax.set_title(f"Predicted Close Prices for {stock_name} (as of {datetime.date.today()})")
     ax.set_xlabel("Date")
     ax.set_ylabel("Stock Price")
@@ -688,7 +693,6 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     # --- Initialization to prevent UnboundLocalError ---
     target_buy_price = last_close
     target_sell_price = last_close
-    stop_loss_price = round(last_close * 0.9, 2)
     target_return_price = last_close
     predicted_return = 0.0
     short_term_direction = 'flat'
@@ -723,7 +727,6 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
             target_sell_price = last_close
             target_return_price = last_close
             predicted_return = 0.0
-            stop_loss_price = round(last_close * 0.94, 2)
         else:
             if spy_open_direction == 'up' and predicted_next_open != 0.01 and predicted_next_open > last_close:
                 target_buy_price = round(0.75 * predicted_next_open + 0.25 * predicted_next_low, 2)
@@ -735,7 +738,6 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
             target_sell_price = round(np.mean([predicted_next_open, predicted_next_high]), 2)
             target_return_price = round(np.mean([target_sell_price, predicted_avg_3_days]), 2)
             predicted_return = ((target_return_price / target_buy_price) - 1) if target_buy_price > 0 else 0
-            stop_loss_price = round(target_buy_price * 0.94, 2)
 
             # Catch edge case where target_buy_price is lower than predicted_next_low
             if predicted_next_low and target_buy_price < predicted_next_low:
@@ -781,10 +783,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
                 long_term_strength = (predicted_high_15_days - predicted_low_15_days) / predicted_avg_15_days
             long_term_recommendation = 'avoid/sell' if predicted_volatility_15_days > 0.15 or long_term_strength > 0.10 else 'buy'
 
-        # If a dip within a certain threshold is foreseen in the 15-day horizon, avoid buying
-        # Use the second-lowest value to soften responses to a single temporary dip.
-        # If the second-lowest is not far below the target buy price, treat the dip as temporary and keep short-term recommendation.
-        DIP_TOLERANCE = 0.02  # 2% tolerance; can tweak as needed or expose to UI
+        DIP_TOLERANCE = 0.02  
         if long_term_direction == 'down':
             try:
                 # If the second-lowest is significantly below the target buy price (beyond tolerance), cancel short-term buy
@@ -1029,12 +1028,12 @@ if st.button("🚀 Run Forecast"):
                     pred_df_c = pred_df_c.reset_index().rename(columns={'timestamp': 'Date'})[['Date', 'target_name', '0.5']]
                     pred_df_c = pred_df_c.pivot(index='Date', columns='target_name', values='0.5')
                     rolling_predictions_c, rolling_df_c = pred_df_c['Close'].tolist(), pred_df_c
-                    
+
                     ###### Sub-process for Elastic Net model ######
                     X_full, y_full = df_e.drop(columns=['Close', 'Open', 'High', 'Low', 'Volume', 'Avg_Sentiment']), df_e['Close']
                     best_model_for_stock.fit(X_full, y_full)
                     rolling_predictions_e, rolling_df_e = rolling_forecast(stock_name, df_e, best_model_for_stock, n_periods, x_data, significant_lags_dict)
-                    
+
                     # --- Consolidate Results ---
                     consolidated_rolling_df = round((rolling_df_c + rolling_df_e.iloc[-len(rolling_df_c):])/2, 2)
                     consolidated_rolling_df = consolidated_rolling_df[['Close', 'Open', 'High', 'Low', 'Volume', 'Avg_Sentiment']]
@@ -1050,7 +1049,7 @@ if st.button("🚀 Run Forecast"):
                 forecast_results[stock_name] = rolling_forecast_df_consolidated
                 summary_results.append(summary_df_consolidated)
 
-                fig_forecast = plot_forecast(df_c, rolling_forecast_df_consolidated, stock_name)
+                fig_forecast = plot_forecast(df_c, rolling_forecast_df_consolidated, rolling_df_c, rolling_df_e, stock_name)
                 st.pyplot(fig_forecast)
 
                 # Display Most Recent News Article
