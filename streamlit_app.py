@@ -457,15 +457,12 @@ def train_test_split(df, train_size=0.80):
     y_train, y_test = y_data.iloc[:split_idx], y_data.iloc[split_idx:]
     return x_data, y_data, x_train, x_test, y_train, y_test
 
-def plot_forecast(df, consolidated_rolling_forecast_df, chronos_predictions_df=None, elastic_net_predictions_df=None, stock_name=None):
+def plot_forecast(df, chronos_predictions_df=None, stock_name=None):
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(df.index[-180:], df['Close'][-180:], label="Historical Close", color='blue', linewidth=2)
-    ax.plot(consolidated_rolling_forecast_df['Date'], consolidated_rolling_forecast_df['Predicted_Close'], label="Ensemble Average Forecast", color='midnightblue', linewidth=2)
     if chronos_predictions_df is not None:
         chronos_predictions_df.reset_index(inplace=True)
-        ax.plot(chronos_predictions_df['Date'], chronos_predictions_df['Close'], label="Chronos Forecast", color='skyblue', linestyle='--', linewidth=1)
-    if elastic_net_predictions_df is not None:
-        ax.plot(elastic_net_predictions_df.index[-len(consolidated_rolling_forecast_df):], elastic_net_predictions_df['Close'].iloc[-len(consolidated_rolling_forecast_df):], label="Elastic Net Forecast", color='orange', linestyle='--', linewidth=1)
+        ax.plot(chronos_predictions_df['Date'], chronos_predictions_df['Close'], label="Chronos Forecast", color='skyblue', linestyle='--', linewidth=2)
     ax.set_title(f"Predicted Close Prices for {stock_name} (as of {datetime.date.today()})")
     ax.set_xlabel("Date")
     ax.set_ylabel("Stock Price")
@@ -998,7 +995,7 @@ if st.button("🚀 Run Forecast"):
                 for model_name, study in studies.items():
                     with st.spinner(f"Optimizing model..."):
                         pruner = optuna.pruners.MedianPruner()
-                        study.optimize(objectives[model_name], n_trials=20)
+                        study.optimize(objectives[model_name], n_trials=5)
                         
                         best_params = study.best_params
                         model = ElasticNet(**best_params)
@@ -1035,7 +1032,7 @@ if st.button("🚀 Run Forecast"):
                     rolling_predictions_e, rolling_df_e = rolling_forecast(stock_name, df_e, best_model_for_stock, n_periods, x_data, significant_lags_dict)
 
                     # --- Consolidate Results ---
-                    consolidated_rolling_df = round((rolling_df_c + rolling_df_e.iloc[-len(rolling_df_c):])/2, 2)
+                    consolidated_rolling_df = round(rolling_df_c, 2)
                     consolidated_rolling_df = consolidated_rolling_df[['Close', 'Open', 'High', 'Low', 'Volume', 'Avg_Sentiment']]
                     consolidated_predictions = consolidated_rolling_df['Close'].tolist()
 
@@ -1049,7 +1046,7 @@ if st.button("🚀 Run Forecast"):
                 forecast_results[stock_name] = rolling_forecast_df_consolidated
                 summary_results.append(summary_df_consolidated)
 
-                fig_forecast = plot_forecast(df_c, rolling_forecast_df_consolidated, rolling_df_c, rolling_df_e, stock_name)
+                fig_forecast = plot_forecast(df_c, rolling_df_c, stock_name)
                 st.pyplot(fig_forecast)
 
                 # Display Most Recent News Article
