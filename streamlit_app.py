@@ -851,7 +851,7 @@ with st.sidebar:
         default_stocks = "AAPL, MSFT, GOOG, AMZN"
 
     stock_list_str = st.text_area("Paste Stock Tickers Here", default_stocks, height=150, help="Paste a list of tickers...")
-    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AST, BIEI, CGC, CGBS, CRON, LDTC, LLC, MJNA, MSOS, NXP, PET, PLC, PLTD, QID, SIX, SLGC, SMCE, SRM, TLRY, WLGS", height=100, help="Tickers you do not wish to buy...")
+    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AST, BIEI, BTCZ, CGC, CGBS, CRON, LDTC, LLC, MJNA, MSOS, MSTU, MSTX, MSTZ, NVD, NXP, PET, PLC, PLTD, PLTG, PLTU, PLTZ, PTIR, QID, QQQU, SIX, SLGC, SMCE, SPDN, SQQQ, SRM, TLRY, TSDD, TSLL, TSLQ, TSLS, TSLY, TQQQ, TZA, WLGS", height=100, help="Tickers you do not wish to buy...")
     
     st.subheader("Forecasting Parameters")
     n_periods = st.slider("Forecast Horizon (days)", 10, 100, 45)
