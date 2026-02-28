@@ -621,10 +621,12 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         
         # Initialize all target variables to safe defaults (0 or N/A) for the summary DataFrame
         nan_summary_data = {
-            'ticker_symbol': [stock_name], 
+            'ticker': [stock_name], 
             'recommendation': ['N/A'],
-            'target_buy_price': [np.nan],
-            'target_sell_price': [np.nan],
+            'target_buy': [np.nan],
+            'target_sell': [np.nan],
+            'avg_daily_upside': [np.nan],
+            'avg_daily_downside': [np.nan],
             'predicted_open': [np.nan],
             'predicted_high': [np.nan],
             'predicted_low': [np.nan],
@@ -693,15 +695,8 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     # --- Initialization to prevent UnboundLocalError ---
     target_buy_price = last_close
     target_sell_price = last_close
-    target_return_price = last_close
-    predicted_return = 0.0
-    short_term_direction = 'flat'
-    long_term_direction = 'flat'
-    short_term_recommendation = 'avoid/sell'
-    long_term_recommendation = 'avoid/sell'
 
     # --- Start of Complex Trade Target Calculation ---
-
     if not predicted_next_open_is_none:
 
         # Check if the ticker being evaluated is SPY - we'll use this as a proxy for short-term market conditions and whether to weight slightly more bullish or bearish
@@ -725,8 +720,6 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         if predicted_next_open is None or predicted_next_low is None or predicted_next_high is None:
             target_buy_price = last_close
             target_sell_price = last_close
-            target_return_price = last_close
-            predicted_return = 0.0
         else:
             if spy_open_direction == 'up' and predicted_next_open != 0.01 and predicted_next_open > last_close:
                 target_buy_price = round(0.75 * predicted_next_open + 0.25 * predicted_next_low, 2)
@@ -736,89 +729,42 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
                 target_buy_price = round(np.mean([predicted_next_open, predicted_next_low]), 2)
 
             target_sell_price = round(np.mean([predicted_next_open, predicted_next_high]), 2)
-            target_return_price = round(np.mean([target_sell_price, predicted_avg_3_days]), 2)
-            predicted_return = ((target_return_price / target_buy_price) - 1) if target_buy_price > 0 else 0
 
             # Catch edge case where target_buy_price is lower than predicted_next_low
             if predicted_next_low and target_buy_price < predicted_next_low:
                 target_buy_price = predicted_next_low
 
-        short_term_direction = 'flat'
-        if predicted_return > 0: 
-            short_term_direction = 'up' 
-        elif predicted_return < 0: 
-            short_term_direction = 'down'
+########################################
 
-        short_term_recommendation = 'avoid/sell'
-        if short_term_direction == 'up' and predicted_return > 0.005:
-            short_term_recommendation = 'buy' if predicted_volatility_15_days < 0.10 else 'hold'
+    ## Recommendation Logic
+    diff_df = rolling_forecast_df.diff()
+    diff_df.loc[0, 'Predicted_Close'] = rolling_forecast_df.loc[0, 'Predicted_Close'] - last_close
+    avg_up = diff_df.loc[diff_df['Predicted_Close'] > 0, 'Predicted_Close'].mean()
+    avg_down = diff_df.loc[diff_df['Predicted_Close'] < 0, 'Predicted_Close'].mean()
+    count_up = diff_df.loc[diff_df['Predicted_Close'] > 0].count().iloc[0]
+    count_down = diff_df.loc[diff_df['Predicted_Close'] < 0].count().iloc[0]
+    net_horizon_change = (avg_up * count_up) + (avg_down * count_down)
 
-        # Adjust recommendation for additional conditions
-        if short_term_direction == 'up' and predicted_return > 0.005:
-            # If predicted range looks wide relative to avg, prefer hold for safety
-            intraday_strength = 0
-            if predicted_next_high and predicted_next_low:
-                intraday_strength = (predicted_next_high - predicted_next_low) / np.mean([predicted_next_open, predicted_next_low, predicted_next_high])
-            short_term_recommendation = 'avoid/sell' if intraday_strength > 0.08 else 'buy'
-
-        # Calculate long-term sell targets, predicted return, and recommendations
-        long_term_sell_price = max(round((predicted_avg_15_days * (1 + (0.5 * predicted_volatility_15_days))), 2), 0.01)
-        long_term_predicted_return = ((long_term_sell_price / target_buy_price) - 1) if target_buy_price > 0 else 0
-
-        long_term_direction = 'flat'
-        if horizon_df['Predicted_Close'].iloc[-1] > target_buy_price: 
-            long_term_direction = 'up'
-        if predicted_low_15_days < target_buy_price: 
-            long_term_direction = 'down'
-
-        # Adjust recommendation for additional conditions
-        long_term_recommendation = 'avoid/sell'
-        if long_term_direction == 'up' and long_term_predicted_return > 0.03:
-            long_term_recommendation = 'buy' if predicted_volatility_15_days < 0.125 else 'hold'
-
-        if long_term_direction == 'up' and predicted_return > 0.03:
-            # If predicted range looks wide relative to avg, prefer hold for safety
-            long_term_strength = 0
-            if predicted_next_high and predicted_next_low and predicted_avg_15_days > 0:
-                long_term_strength = (predicted_high_15_days - predicted_low_15_days) / predicted_avg_15_days
-            long_term_recommendation = 'avoid/sell' if predicted_volatility_15_days > 0.15 or long_term_strength > 0.10 else 'buy'
-
-        DIP_TOLERANCE = 0.02  
-        if long_term_direction == 'down':
-            try:
-                # If the second-lowest is significantly below the target buy price (beyond tolerance), cancel short-term buy
-                if predicted_second_lowest_15_days < (target_buy_price * (1 - DIP_TOLERANCE)):
-                    short_term_recommendation = 'avoid/sell'
-                else:
-                    # treat as temporary dip: do not override previously determined short_term_recommendation
-                    pass
-            except Exception:
-                short_term_recommendation = 'avoid/sell'
-
-        # If predicted return is very high (greater than 50%), likely too good to be true - avoid
-        if predicted_return > 0.50:
-            short_term_recommendation = 'avoid/sell'
-            long_term_recommendation = 'avoid/sell'
-
-        # If price is extremely low (penny stock), avoid buying
-        if target_buy_price < 1.00:
-            short_term_recommendation = 'avoid/sell'
-            long_term_recommendation = 'avoid/sell'
-
-        # Final logic
-        if short_term_recommendation == 'avoid/sell' or long_term_recommendation == 'avoid/sell':
-            recommendation = 'avoid/sell'
-        elif short_term_recommendation == 'buy' and long_term_recommendation == 'buy':
+    if net_horizon_change > 0 and (target_buy_price > 1 and last_close > 1):
+        # Analysis of S&P500 daily price movement (March 2025 - Feb 2026) showed that the market was up 56% of the time on a daily basis
+        # Using this baseline, chi-squared testing showed that the null hypothesis of "being up no more frequently than the market on average" must not be rejected unless the stock closes up more than 62.4% of the time
+        if count_up/len(rolling_forecast_df) > 0.624: 
             recommendation = 'buy'
-        else:
-            recommendation = 'avoid/sell'
+        elif count_up/len(rolling_forecast_df) > 0.5:
+            recommendation = 'hold'
+    else:
+        recommendation = 'avoid/sell'
+
+########################################
 
     # Create summary_df after all calculations
     summary_df = pd.DataFrame({
-        'ticker_symbol': [stock_name], 
+        'ticker': [stock_name], 
         'recommendation': [recommendation],
-        'target_buy_price': [target_buy_price],
-        'target_sell_price': [target_sell_price],
+        'target_buy': [target_buy_price],
+        'target_sell': [target_sell_price],
+        'avg_daily_upside': [avg_up],
+        'avg_daily_downside': [avg_down],
         'predicted_open': [predicted_next_open],
         'predicted_high': [predicted_next_high],
         'predicted_low': [predicted_next_low],
@@ -851,7 +797,7 @@ with st.sidebar:
         default_stocks = "AAPL, MSFT, GOOG, AMZN"
 
     stock_list_str = st.text_area("Paste Stock Tickers Here", default_stocks, height=150, help="Paste a list of tickers...")
-    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AST, BIEI, BTCZ, CGC, CGBS, CRON, LDTC, LLC, MJNA, MSOS, MSTU, MSTX, MSTZ, NVD, NXP, PET, PLC, PLTD, PLTG, PLTU, PLTZ, PTIR, QID, QQQU, SIX, SLGC, SMCE, SPDN, SQQQ, SRM, TLRY, TSDD, TSLL, TSLQ, TSLS, TSLY, TQQQ, TZA, WLGS", height=100, help="Tickers you do not wish to buy...")
+    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AST, BIEI, BTCZ, CGC, CGBS, CRON, LDTC, LLC, MJNA, MSOS, MSTU, MSTX, MSTZ, NVD, NXP, PET, PLC, PLTD, PLTG, PLTU, PLTZ, PTIR, QID, QQQU, SIX, SLGC, SMCE, SOXS, SPDN, SQQQ, SRM, TLRY, TSDD, TSLL, TSLQ, TSLS, TSLY, TQQQ, TZA, WLGS", height=100, help="Tickers you do not wish to buy...")
     
     st.subheader("Forecasting Parameters")
     n_periods = st.slider("Forecast Horizon (days)", 10, 100, 45)
@@ -1061,7 +1007,10 @@ if st.button("🚀 Run Forecast"):
                     st.caption(most_recent_article['description'])
                     st.markdown("---")
 
-                st.dataframe(summary_df_consolidated, width='stretch')
+                try:
+                    st.dataframe(summary_df_consolidated, width='stretch')
+                except:
+                    st.dataframe(summary_df_consolidated, use_container_width=True)
 
                 sheet_name = re.sub(r'[\[\]\*:\?/\\ ]', '_', stock_name)[:31]
                 

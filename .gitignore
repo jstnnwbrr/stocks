@@ -16,7 +16,7 @@ dist/
 # --- Local Data & Cache ---
 # Ignore the model weights if you download them locally outside Docker
 .cache/
-# Ignore forecasting outputs so you don't clutter git with Excel files
+# Ignore forecasting outputs to avoid cluttering repo with large files
 *.xlsx
 *.csv
 
