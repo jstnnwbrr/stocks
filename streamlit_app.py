@@ -623,14 +623,12 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         nan_summary_data = {
             'ticker': [stock_name], 
             'recommendation': ['N/A'],
+            'last_close': [np.nan],
             'target_buy': [np.nan],
             'target_sell': [np.nan],
-            'avg_daily_upside': [np.nan],
-            'avg_daily_downside': [np.nan],
-            'predicted_open': [np.nan],
-            'predicted_high': [np.nan],
-            'predicted_low': [np.nan],
-            'predicted_sentiment': [np.nan]
+            'avg_daily_up': [np.nan],
+            'avg_daily_down': [np.nan],
+            'pred_sentiment': [np.nan]
         }
         empty_summary_df = pd.DataFrame(nan_summary_data)
         return empty_forecast_df, empty_summary_df
@@ -643,23 +641,6 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     rolling_forecast_df = pd.DataFrame({
         'Date': pd.date_range(start=df.index[-1], periods=actual_forecast_length + 1, freq='B')[1:],
         'Predicted_Close': rolling_predictions})
-
-    horizon_df = rolling_forecast_df.head(15)
-
-    predicted_avg_3_days = max(round(horizon_df['Predicted_Close'].head(3).mean(), 2), 0.01)
-    predicted_high_15_days = max(round(horizon_df['Predicted_Close'].max(), 2), 0.01)
-    predicted_low_15_days = max(round(horizon_df['Predicted_Close'].min(), 2), 0.01)
-    
-    # Compute the second-lowest predicted close within the 15-day horizon to avoid overreacting to a single deep dip
-    horizon_vals = horizon_df['Predicted_Close'].dropna().values
-    if len(horizon_vals) >= 2:
-        sorted_vals = np.sort(horizon_vals)
-        predicted_second_lowest_15_days = max(round(float(sorted_vals[1]), 2), 0.01)
-    else:
-        predicted_second_lowest_15_days = predicted_low_15_days
-    
-    predicted_avg_15_days = max(round(horizon_df['Predicted_Close'].mean(), 2), 0.01)
-    predicted_volatility_15_days = round(horizon_df['Predicted_Close'].std() / predicted_avg_15_days, 3)
 
     # Extract predicted Open/High/Low for next (first forecasted) day if available in rolling_df
     predicted_next_open = predicted_next_high = predicted_next_low = predicted_next_avg_sentiment = None
@@ -695,6 +676,7 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     # --- Initialization to prevent UnboundLocalError ---
     target_buy_price = last_close
     target_sell_price = last_close
+    recommendation = 'avoid/sell'
 
     # --- Start of Complex Trade Target Calculation ---
     if not predicted_next_open_is_none:
@@ -735,7 +717,6 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
                 target_buy_price = predicted_next_low
 
 ########################################
-
     ## Recommendation Logic
     diff_df = rolling_forecast_df.diff()
     diff_df.loc[0, 'Predicted_Close'] = rolling_forecast_df.loc[0, 'Predicted_Close'] - last_close
@@ -748,27 +729,24 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     if net_horizon_change > 0 and (target_buy_price > 1 and last_close > 1):
         # Analysis of S&P500 daily price movement (March 2025 - Feb 2026) showed that the market was up 56% of the time on a daily basis
         # Using this baseline, chi-squared testing showed that the null hypothesis of "being up no more frequently than the market on average" must not be rejected unless the stock closes up more than 62.4% of the time
-        if count_up/len(rolling_forecast_df) > 0.624: 
+        if count_up/len(rolling_forecast_df) >= 0.624: 
             recommendation = 'buy'
-        elif count_up/len(rolling_forecast_df) > 0.5:
+        elif count_up/len(rolling_forecast_df) >= 0.5:
             recommendation = 'hold'
     else:
         recommendation = 'avoid/sell'
-
 ########################################
 
     # Create summary_df after all calculations
     summary_df = pd.DataFrame({
         'ticker': [stock_name], 
         'recommendation': [recommendation],
+        'last_close': [last_close],
         'target_buy': [target_buy_price],
         'target_sell': [target_sell_price],
-        'avg_daily_upside': [avg_up],
-        'avg_daily_downside': [avg_down],
-        'predicted_open': [predicted_next_open],
-        'predicted_high': [predicted_next_high],
-        'predicted_low': [predicted_next_low],
-        'predicted_sentiment': [predicted_next_avg_sentiment]})
+        'avg_daily_up': [avg_up],
+        'avg_daily_down': [avg_down],
+        'pred_sentiment': [predicted_next_avg_sentiment]})
 
     return rolling_forecast_df, summary_df
 
@@ -788,7 +766,6 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     
     st.subheader("Ticker Input")
-    st.info("App pre-populates the top 200 most active stocks, but feel free to paste your own!")
     
     if tiingo_api_key:
         default_tickers = get_top_200_active_tickers(tiingo_api_key)
