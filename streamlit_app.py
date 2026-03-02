@@ -621,9 +621,9 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
         
         # Initialize all target variables to safe defaults (0 or N/A) for the summary DataFrame
         nan_summary_data = {
-            'ticker': [stock_name], 
+            'ticker': [stock_name],
+            'last_close': [np.nan], 
             'recommendation': ['N/A'],
-            'last_close': [np.nan],
             'target_buy': [np.nan],
             'target_sell': [np.nan],
             'avg_daily_up': [np.nan],
@@ -740,8 +740,8 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     # Create summary_df after all calculations
     summary_df = pd.DataFrame({
         'ticker': [stock_name], 
-        'recommendation': [recommendation],
         'last_close': [last_close],
+        'recommendation': [recommendation],
         'target_buy': [target_buy_price],
         'target_sell': [target_sell_price],
         'avg_daily_up': [avg_up],
