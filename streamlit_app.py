@@ -196,7 +196,7 @@ def parse_and_clean_tickers(input_data):
     return unique_tickers
 
 @st.cache_data(ttl=3600) # Cache data for 1 hour
-def get_top_200_active_tickers(tiingo_api_key):
+def get_active_tickers(tiingo_api_key):
     url = "https://api.tiingo.com/iex"
     headers = {
         "Authorization": f"Token {tiingo_api_key}"
@@ -211,7 +211,7 @@ def get_top_200_active_tickers(tiingo_api_key):
         df = df.sort_values(by="volume", ascending=False)
 
         top_tickers = ['SPY']  # Always include SPY for market context
-        top_tickers += df['ticker'].head(200).tolist()
+        top_tickers += df['ticker'].tolist()
         top_tickers = parse_and_clean_tickers(top_tickers)
         
         # Ensure that 'SPY' wasn't duplicated
@@ -221,6 +221,9 @@ def get_top_200_active_tickers(tiingo_api_key):
             if ticker not in unique_seen:
                 unique_seen.add(ticker)
                 unique_top_tickers.append(ticker)
+        
+        # Keep only top 200 tickers
+        unique_top_tickers = unique_top_tickers[:200]
         return unique_top_tickers
 
     except Exception as e:
@@ -768,13 +771,13 @@ with st.sidebar:
     st.subheader("Ticker Input")
     
     if tiingo_api_key:
-        default_tickers = get_top_200_active_tickers(tiingo_api_key)
+        default_tickers = get_active_tickers(tiingo_api_key)
         default_stocks = ", ".join(default_tickers)
     else:
         default_stocks = "AAPL, MSFT, GOOG, AMZN"
 
     stock_list_str = st.text_area("Paste Stock Tickers Here", default_stocks, height=150, help="Paste a list of tickers...")
-    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AST, BIEI, BTCZ, CGC, CGBS, CRON, LDTC, LLC, MJNA, MSOS, MSTU, MSTX, MSTZ, NVD, NXP, PET, PLC, PLTD, PLTG, PLTU, PLTZ, PTIR, QID, QQQU, SIX, SLGC, SMCE, SOXS, SPDN, SQQQ, SRM, TLRY, TSDD, TSLL, TSLQ, TSLS, TSLY, TQQQ, TZA, WLGS", height=100, help="Tickers you do not wish to buy...")
+    do_not_buy_list_str = st.text_area("Do Not Buy List (Optional)", "AST, BIEI, BITX, BTCZ, CGC, CGBS, CONL, CRON, LDTC, LLC, MJNA, MSOS, MSTU, MSTX, MSTZ, NVD, NVDX, NXP, PET, PLC, PLTD, PLTG, PLTU, PLTZ, PTIR, QID, QQQU, SIX, SLGC, SMCE, SOXS, SPDN, SQQQ, SRM, TLRY, TSDD, TSLL, TSLQ, TSLS, TSLY, TQQQ, TZA, WLGS", height=100, help="Tickers you do not wish to buy...")
     
     st.subheader("Forecasting Parameters")
     n_periods = st.slider("Forecast Horizon (days)", 10, 100, 45)
