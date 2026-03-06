@@ -724,9 +724,16 @@ def finalize_forecast_and_metrics(stock_name, rolling_predictions, df, n_periods
     diff_df = rolling_forecast_df.diff()
     diff_df.loc[0, 'Predicted_Close'] = rolling_forecast_df.loc[0, 'Predicted_Close'] - last_close
     avg_up = diff_df.loc[diff_df['Predicted_Close'] > 0, 'Predicted_Close'].mean()
-    avg_down = diff_df.loc[diff_df['Predicted_Close'] < 0, 'Predicted_Close'].mean()
     count_up = diff_df.loc[diff_df['Predicted_Close'] > 0].count().iloc[0]
-    count_down = diff_df.loc[diff_df['Predicted_Close'] < 0].count().iloc[0]
+
+    # Set avg_down to a small negative number if there are no predicted down days to avoid NaN and allow the net_horizon_change calculation to proceed
+    if diff_df.loc[diff_df['Predicted_Close'] < 0, 'Predicted_Close'].empty:
+        avg_down = -0.01  # Small negative value to indicate average down movement when no down days are predicted
+        count_down = 0
+    else:
+        avg_down = diff_df.loc[diff_df['Predicted_Close'] < 0, 'Predicted_Close'].mean()
+        count_down = diff_df.loc[diff_df['Predicted_Close'] < 0].count().iloc[0]
+    
     net_horizon_change = (avg_up * count_up) + (avg_down * count_down)
 
     if net_horizon_change > 0 and (target_buy_price > 1 and last_close > 1):
